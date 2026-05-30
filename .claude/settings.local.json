@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest toralert/tests/test_postgres.py --collect-only)",
+      "Bash(python3 -m pytest toralert/tests/test_postgres.py --collect-only)",
+      "Bash(poetry run *)",
+      "Bash(poetry install *)",
+      "Bash(poetry lock *)",
+      "Bash(gh auth *)",
+      "Bash(xargs sed -i 's/toralert/cns/g')"
+    ]
+  }
+}
