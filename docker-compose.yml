@@ -1,18 +1,18 @@
-version: "3.9"
-
 services:
+
+  # ── Baza danych ──────────────────────────────────────────────────────────────
   db:
     image: postgres:16-alpine
     container_name: cyrk-na-szynach-db
     environment:
-      POSTGRES_USER: cyrk_na_szynach
+      POSTGRES_USER:     cyrk_na_szynach
       POSTGRES_PASSWORD: cyrk_na_szynach
-      POSTGRES_DB: cyrk_na_szynach
+      POSTGRES_DB:       cyrk_na_szynach
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./migrations:/docker-entrypoint-initdb.d:ro
-    ports:
-      - "5432:5432"
+    expose:
+      - "5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U cyrk_na_szynach"]
       interval: 10s
@@ -20,6 +20,23 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # ── Kolektor RT ──────────────────────────────────────────────────────────────
+  collector:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: cyrk-na-szynach-collector
+    command: ["python", "-m", "cns", "--verbose"]
+    environment:
+      DATABASE_URL: postgresql://cyrk_na_szynach:cyrk_na_szynach@db:5432/cyrk_na_szynach
+    env_file:
+      - .env           # PKP_API_KEY i inne zmienne
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── FastAPI ───────────────────────────────────────────────────────────────────
   fastapi:
     build:
       context: .
@@ -27,24 +44,45 @@ services:
     container_name: cyrk-na-szynach-api
     environment:
       DATABASE_URL: postgresql://cyrk_na_szynach:cyrk_na_szynach@db:5432/cyrk_na_szynach
-    ports:
-      - "8000:8000"
+    env_file:
+      - .env
+    expose:
+      - "8000"
     depends_on:
       db:
         condition: service_healthy
     restart: unless-stopped
 
+  # ── Next.js dashboard ────────────────────────────────────────────────────────
   dashboard:
     build:
       context: ./dashboard
       dockerfile: Dockerfile
+      args:
+        # /api jest proxowane przez nginx do fastapi:8000
+        # Po dodaniu domeny zmień na: https://twojadomena.pl/api
+        NEXT_PUBLIC_API_URL: /api
     container_name: cyrk-na-szynach-dashboard
-    environment:
-      NEXT_PUBLIC_API_URL: http://fastapi:8000
-    ports:
-      - "3000:3000"
+    expose:
+      - "3000"
     depends_on:
       - fastapi
+    restart: unless-stopped
+
+  # ── Nginx reverse proxy ──────────────────────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: cyrk-na-szynach-nginx
+    ports:
+      - "80:80"
+      - "443:443"     # SSL — aktywny po skonfigurowaniu certbot (CNS.md KROK 8)
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # Po wykonaniu KROK 8 (certbot) odkomentuj poniższą linię:
+      # - /etc/letsencrypt:/etc/letsencrypt:ro
+    depends_on:
+      - fastapi
+      - dashboard
     restart: unless-stopped
 
 volumes:
