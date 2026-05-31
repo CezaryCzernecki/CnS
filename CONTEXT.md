@@ -96,10 +96,12 @@ docker exec -i cyrk-na-szynach-db psql -U cyrk_na_szynach -d cyrk_na_szynach < p
 - Obsługa rate-limit (czeka do kolejnej godziny jeśli limit wyczerpany)
 - Filtrowanie anomalii >200 min
 - FastAPI: `/delays/stations/top`, `/delays/active`, `/stats`
-- Testy jednostkowe: parser (test_parser.py) + storage z mockami (test_postgres.py)
+- Testy jednostkowe: parser (test_parser.py) + storage z mockami (test_postgres.py) + weather (test_weather.py)
+- WeatherClient (Open-Meteo): pobieranie pogody co 1h dla ~30 głównych stacji PKP
 
 ## Co jest do zrobienia (backlog)
 
+- [x] WeatherClient + tabela `weather_observations` (Faza 1.1) ✅
 - [ ] Dashboard / wizualizacja opóźnień (Streamlit?)
 - [ ] Analiza opóźnień per przewoźnik
 - [ ] Alerty (email/push) dla dużych opóźnień

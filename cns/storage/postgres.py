@@ -378,6 +378,65 @@ class PostgresStorage:
         logger.info("Utrudnienia: zapisano %d, pominięto %d", inserted, skipped)
 
     # -------------------------------------------------------------------------
+    # Pogoda
+    # -------------------------------------------------------------------------
+
+    def get_weather_stations(self, limit: int = 30) -> list[tuple]:
+        """Zwraca (station_id, latitude, longitude) dla stacji z koordynatami."""
+        sql = """
+            SELECT station_id, latitude, longitude
+            FROM stations
+            WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+            ORDER BY name
+            LIMIT %s
+        """
+        with _conn(self.database_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (limit,))
+                return cur.fetchall()
+
+    def save_weather_observations(self, observations: list[dict]) -> None:
+        if not observations:
+            return
+        sql = """
+            INSERT INTO weather_observations
+                (station_id, observed_at, is_forecast,
+                 temperature_c, precipitation_mm, wind_speed_kmh,
+                 snowfall_cm, visibility_m, cloud_cover_pct, weather_code)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (station_id, observed_at, is_forecast) DO UPDATE SET
+                temperature_c=EXCLUDED.temperature_c,
+                precipitation_mm=EXCLUDED.precipitation_mm,
+                wind_speed_kmh=EXCLUDED.wind_speed_kmh,
+                snowfall_cm=EXCLUDED.snowfall_cm,
+                visibility_m=EXCLUDED.visibility_m,
+                cloud_cover_pct=EXCLUDED.cloud_cover_pct,
+                weather_code=EXCLUDED.weather_code
+        """
+        rows = [
+            (
+                obs.get("station_id"),
+                obs.get("observed_at"),
+                obs.get("is_forecast", False),
+                obs.get("temperature_c"),
+                obs.get("precipitation_mm"),
+                obs.get("wind_speed_kmh"),
+                obs.get("snowfall_cm"),
+                obs.get("visibility_m"),
+                obs.get("cloud_cover_pct"),
+                obs.get("weather_code"),
+            )
+            for obs in observations
+            if obs.get("station_id") and obs.get("observed_at")
+        ]
+        if not rows:
+            return
+        with _conn(self.database_url) as conn:
+            with conn.cursor() as cur:
+                cur.executemany(sql, rows)
+        logger.info("Zapisano %d obserwacji pogodowych", len(rows))
+
+    # -------------------------------------------------------------------------
     # Diagnostyka
     # -------------------------------------------------------------------------
 

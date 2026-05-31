@@ -124,6 +124,7 @@ Orkiestrator harmonogramu.
 | `/disruptions` | co 60 min | ~24 |
 | `/schedules` | raz dziennie po 04:00 | ~1 |
 | bootstrap (stacje, przewoźnicy) | przy starcie | ~2 |
+| Open-Meteo (pogoda, 30 stacji) | co 60 min | ~30 (zewnętrzne API) |
 
 **Cache wersji danych:**
 Przed każdym pobraniem `/operations` sprawdza `/data-version`.
@@ -302,6 +303,29 @@ v_active_delays        -- aktualnie opóźnione pociągi (status P)
 v_station_delay_stats  -- statystyki per stacja (ostatnie 7 dni, min. 10 danych)
 ```
 
+### Dane pogodowe (Faza 1.1)
+```sql
+weather_observations (
+    id              BIGSERIAL PK,
+    station_id      VARCHAR(20),            -- FK do stations (soft, bez constraint)
+    observed_at     TIMESTAMPTZ NOT NULL,   -- czas obserwacji / godzina prognozy
+    is_forecast     BOOLEAN NOT NULL,       -- FALSE = obserwacja, TRUE = prognoza
+    temperature_c   NUMERIC(5,2),           -- temperatura [°C]
+    precipitation_mm NUMERIC(6,2),          -- opady [mm]
+    wind_speed_kmh  NUMERIC(6,2),           -- prędkość wiatru [km/h]
+    snowfall_cm     NUMERIC(6,2),           -- opady śniegu [cm]
+    visibility_m    INTEGER,                -- widzialność [m]
+    cloud_cover_pct SMALLINT,               -- zachmurzenie [%]
+    weather_code    SMALLINT,               -- kod WMO
+    collected_at    TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (station_id, observed_at, is_forecast)
+)
+
+Indeksy:
+  weather_observations_station_time_idx  ON (station_id, observed_at DESC)
+  weather_observations_forecast_idx      ON (observed_at) WHERE is_forecast = TRUE
+```
+
 ## Znane ograniczenia i gotcha
 
 1. **trainNumber/carrierCode niedostępne w /operations** — są w /schedules.
@@ -335,6 +359,42 @@ v_station_delay_stats  -- statystyki per stacja (ostatnie 7 dni, min. 10 danych)
 | train_operations | ~38 400 | ~150 MB |
 | operations_snapshots | 96 | ~1 MB |
 | disruptions | ~310 | ~5 MB |
+
+### `collector/weather_client.py` — WeatherClient
+
+Klient HTTP dla Open-Meteo API (bezpłatne, bez klucza API).
+Pobiera warunki pogodowe dla ~30 głównych węzłów PKP co 1h.
+
+**Kluczowe zachowania:**
+- Brak klucza API — Open-Meteo jest bezpłatne
+- Retry 3x z backoff 2s/4s/8s — identycznie jak PKPClient
+- Brak śledzenia rate-limitów (Open-Meteo nie ma nagłówków X-RateLimit)
+- `get_current` używa parametru `current=...` (jeden rekord, is_forecast=False)
+- `get_forecast_48h` używa `hourly=...&forecast_days=2` (48 rekordów, is_forecast=True)
+- Pola całkowitoliczbowe (`visibility_m`, `cloud_cover_pct`, `weather_code`) castowane do `int`
+- Wartości `None` z API zachowywane jako `None` (defensywny parser)
+
+**Metody publiczne:**
+```python
+client.get_current("33506", lat=52.22, lon=21.00)
+# → {"station_id": "33506", "observed_at": "2026-05-31T12:00",
+#    "is_forecast": False, "temperature_c": 18.5, ...}
+
+client.get_forecast_48h("33506", lat=52.22, lon=21.00)
+# → [{"station_id": "33506", "observed_at": "...", "is_forecast": True, ...}, ...]  # 48 rekordów
+```
+
+**Integracja z DataCollector:**
+- `DataCollector.__init__` tworzy `self.weather_client = WeatherClient()`
+- `_fetch_weather()` odpytuje stacje z DB przez `storage.get_weather_stations(limit=30)`
+- Wywołuje `get_forecast_48h` dla każdej stacji, zapisuje przez `storage.save_weather_observations`
+- Harmonogram: co 60 minut (nowy parametr `weather_interval_min=60`)
+- Używa `hasattr` guard — przezroczyste dla `JsonFileStorage`
+
+**Gotcha:**
+- Open-Meteo zwraca `visibility` w metrach (nie km)
+- `forecast_days=2` gwarantuje dokładnie 48 rekordów godzinowych (2×24)
+- Stacje bez `latitude/longitude` w tabeli `stations` są pomijane
 
 ## Jak zacząć nowy czat z Claude
 

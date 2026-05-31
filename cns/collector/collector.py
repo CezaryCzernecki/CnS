@@ -16,6 +16,7 @@ from cns.collector.client import PKPClient, RateLimitError
 from cns.collector.parser import (
     parse_carriers, parse_operations, parse_stations,
 )
+from cns.collector.weather_client import WeatherClient
 from cns.models.records import OperationsSnapshot
 
 logger = logging.getLogger(__name__)
@@ -77,16 +78,20 @@ class DataCollector:
         storage: Storage = None,
         operations_interval_min: int = 15,
         disruptions_interval_min: int = 60,
+        weather_interval_min: int = 60,
         dry_run: bool = False,
     ):
         self.client = PKPClient(api_key)
+        self.weather_client = WeatherClient()
         self.storage = storage or JsonFileStorage()
         self.ops_interval = operations_interval_min * 60
         self.dis_interval = disruptions_interval_min * 60
+        self.weather_interval = weather_interval_min * 60
         self.dry_run = dry_run
 
         self._last_operations: Optional[float] = None
         self._last_disruptions: Optional[float] = None
+        self._last_weather: Optional[float] = None
         self._last_schedules_date: Optional[date] = None
         self._last_operations_version: Optional[str] = None
 
@@ -124,6 +129,7 @@ class DataCollector:
         self._bootstrap()
         self._fetch_operations(force=True)
         self._fetch_disruptions(force=True)
+        self._fetch_weather()
         self._fetch_schedules_if_needed()
 
     def _bootstrap(self) -> None:
@@ -160,6 +166,9 @@ class DataCollector:
         if self._last_disruptions is None or (now - self._last_disruptions) >= self.dis_interval:
             self._fetch_disruptions()
             self._last_disruptions = now
+        if self._last_weather is None or (now - self._last_weather) >= self.weather_interval:
+            self._fetch_weather()
+            self._last_weather = now
         self._fetch_schedules_if_needed()
 
     def _fetch_operations(self, force: bool = False) -> None:
@@ -214,6 +223,37 @@ class DataCollector:
             raise
         except Exception as e:
             logger.error("Błąd pobierania /disruptions: %s", e, exc_info=True)
+
+    def _fetch_weather(self) -> None:
+        logger.info("Pobieram dane pogodowe...")
+        if not hasattr(self.storage, "get_weather_stations"):
+            logger.debug("Storage nie obsługuje pogody – pomijam")
+            return
+        try:
+            stations = self.storage.get_weather_stations(limit=30)
+            if not stations:
+                logger.warning("Brak stacji z koordynatami – pomijam pobieranie pogody")
+                return
+
+            all_obs: list[dict] = []
+            for station_id, lat, lon in stations:
+                try:
+                    obs = self.weather_client.get_forecast_48h(
+                        str(station_id), float(lat), float(lon)
+                    )
+                    all_obs.extend(obs)
+                except Exception as e:
+                    logger.warning("Błąd pogody dla stacji %s: %s", station_id, e)
+
+            logger.info(
+                "Pobrano %d obserwacji pogodowych dla %d stacji",
+                len(all_obs), len(stations),
+            )
+            if not self.dry_run and all_obs and hasattr(self.storage, "save_weather_observations"):
+                self.storage.save_weather_observations(all_obs)
+
+        except Exception as e:
+            logger.error("Błąd pobierania pogody: %s", e, exc_info=True)
 
     def _fetch_schedules_if_needed(self) -> None:
         today = date.today()
