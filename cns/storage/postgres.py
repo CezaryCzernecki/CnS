@@ -295,7 +295,11 @@ class PostgresStorage:
 
                 # Jeden executemany zamiast 10 000 osobnych wywołań
                 if all_stop_rows:
-                    cur.executemany(stop_sql, all_stop_rows)
+                    cur.execute("SELECT station_id FROM stations")
+                    valid_ids = {row[0] for row in cur.fetchall()}
+                    all_stop_rows = [r for r in all_stop_rows if r[1] in valid_ids]
+                    if all_stop_rows:
+                        cur.executemany(stop_sql, all_stop_rows)
 
         elapsed = time.monotonic() - t0
         logger.info(
