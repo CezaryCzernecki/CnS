@@ -13,7 +13,8 @@ Endpointy:
     GET /delays/stations/top      – top N stacji z największymi opóźnieniami (7 dni)
     GET /delays/active            – aktualnie opóźnione pociągi (status P)
     GET /stats                    – statystyki bazy
-    GET /predict/baseline         – predykcja opóźnienia (model historycznych median)
+    GET /predict                  – predykcja XGBoost (główny model produkcyjny)
+    GET /predict/baseline         – predykcja model historycznych median (benchmark)
 """
 
 import logging
@@ -21,7 +22,7 @@ import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -30,33 +31,45 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Lifespan – ładowanie modelu ML przy starcie
+# Lifespan – ładowanie modeli ML przy starcie
 # ---------------------------------------------------------------------------
 
-def _find_latest_model() -> Optional[Path]:
-    """Zwraca najnowszy baseline_v*.pkl z katalogu models/."""
-    model_path_env = os.environ.get("BASELINE_MODEL_PATH")
-    if model_path_env:
-        p = Path(model_path_env)
+def _find_model(pattern: str) -> Optional[Path]:
+    env_key = "BASELINE_MODEL_PATH" if "baseline" in pattern else "XGB_MODEL_PATH"
+    env_path = os.environ.get(env_key)
+    if env_path:
+        p = Path(env_path)
         return p if p.exists() else None
     models_dir = Path("models")
     if not models_dir.exists():
         return None
-    candidates = sorted(models_dir.glob("baseline_v*.pkl"), reverse=True)
+    candidates = sorted(models_dir.glob(pattern), reverse=True)
     return candidates[0] if candidates else None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.baseline_model = None
-    model_path = _find_latest_model()
-    if model_path:
+    app.state.xgb_model = None
+
+    baseline_path = _find_model("baseline_v*.pkl")
+    if baseline_path:
         try:
             from cns.ml.baseline_model import BaselineModel
-            app.state.baseline_model = BaselineModel.load(model_path)
-            logger.info("Załadowano model baseline: %s", model_path)
+            app.state.baseline_model = BaselineModel.load(baseline_path)
+            logger.info("Załadowano model baseline: %s", baseline_path)
         except Exception as e:
-            logger.warning("Nie udało się załadować modelu baseline: %s", e)
+            logger.warning("Błąd ładowania baseline: %s", e)
+
+    xgb_path = _find_model("xgb_v*.pkl")
+    if xgb_path:
+        try:
+            from cns.ml.xgb_model import XGBoostDelayPredictor
+            app.state.xgb_model = XGBoostDelayPredictor.load(xgb_path)
+            logger.info("Załadowano model XGBoost: %s", xgb_path)
+        except Exception as e:
+            logger.warning("Błąd ładowania XGBoost: %s", e)
+
     yield
 
 
@@ -69,7 +82,7 @@ app = FastAPI(
 
 
 # ---------------------------------------------------------------------------
-# Dependency – URL bazy danych
+# Dependency
 # ---------------------------------------------------------------------------
 
 def _db_url() -> str:
@@ -77,6 +90,87 @@ def _db_url() -> str:
     if not url:
         raise HTTPException(status_code=503, detail="DATABASE_URL nie jest skonfigurowany")
     return url
+
+
+def _fetch_weather(db_url: str, station_id: str) -> dict:
+    """Pobiera najnowszą obserwację pogodową z bazy. Błąd → pusty słownik."""
+    try:
+        import psycopg
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT temperature_c, precipitation_mm, wind_speed_kmh,
+                           snowfall_cm, visibility_m
+                    FROM weather_observations
+                    WHERE station_id = %s AND is_forecast = FALSE
+                    ORDER BY observed_at DESC LIMIT 1
+                    """,
+                    (station_id,),
+                )
+                row = cur.fetchone()
+                if row:
+                    return {
+                        "temperature_c": row[0],
+                        "precipitation_mm": row[1],
+                        "wind_speed_kmh": row[2],
+                        "snowfall_cm": row[3],
+                        "visibility_m": row[4],
+                    }
+    except Exception:
+        pass
+    return {}
+
+
+def _fetch_station_name(db_url: str, station_id: str) -> Optional[str]:
+    try:
+        import psycopg
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT name FROM stations WHERE station_id = %s",
+                    (int(station_id),),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+    except Exception:
+        return None
+
+
+def _build_features(
+    station_id: str,
+    dt: datetime,
+    day_type: str,
+    prev_stop_delay_min: float,
+    planned_sequence: int,
+    weather: dict,
+) -> dict:
+    """Buduje słownik cech dla modelu ML."""
+    t = weather.get("temperature_c") or 0.0
+    p = weather.get("precipitation_mm") or 0.0
+    w = weather.get("wind_speed_kmh") or 0.0
+    s = weather.get("snowfall_cm") or 0.0
+    v = weather.get("visibility_m") or 10000
+
+    return {
+        "station_id":          station_id,
+        "hour_of_day":         dt.hour,
+        "day_of_week":         (dt.weekday() + 1) % 7,  # PostgreSQL DOW: 0=Sun
+        "month":               dt.month,
+        "planned_sequence":    planned_sequence,
+        "prev_stop_delay_min": prev_stop_delay_min,
+        "temperature_c":       t,
+        "precipitation_mm":    p,
+        "wind_speed_kmh":      w,
+        "snowfall_cm":         s,
+        "visibility_m":        v,
+        "is_snowing":          s > 1,
+        "is_heavy_rain":       p > 5,
+        "is_strong_wind":      w > 70,
+        "is_frost":            t < -10,
+        "is_dense_fog":        v < 200,
+        "day_type":            day_type,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +199,23 @@ class ActiveDelay(BaseModel):
     delay_departure_min: Optional[int] = None
     delay_arrival_min: Optional[int] = None
     snapshot_time: Optional[str] = None
+
+
+class ExplanationItem(BaseModel):
+    feature: str
+    impact: float
+    value: Optional[Any] = None
+
+
+class XGBPredictionResponse(BaseModel):
+    station_id: str
+    station_name: Optional[str] = None
+    predicted_delay_min: float
+    p75_delay_min: Optional[float] = None
+    confidence_interval: Optional[list[float]] = None
+    model: str = "xgboost"
+    model_date: Optional[str] = None
+    explanation: Optional[list[ExplanationItem]] = None
 
 
 class BaselinePredictionResponse(BaseModel):
@@ -157,11 +268,8 @@ def top_delayed_stations(
 
     return [
         StationDelayStat(
-            station_id=r[0],
-            station_name=r[1],
-            total_stops=r[2],
-            stops_with_data=r[3],
-            delayed_count=r[4],
+            station_id=r[0], station_name=r[1],
+            total_stops=r[2], stops_with_data=r[3], delayed_count=r[4],
             avg_delay_min=float(r[5]) if r[5] is not None else None,
             max_delay_min=r[6],
             delay_rate_pct=float(r[7]) if r[7] is not None else None,
@@ -200,15 +308,12 @@ def active_delays(
 
     return [
         ActiveDelay(
-            station_id=r[0],
-            station_name=r[1],
-            schedule_id=r[2],
-            order_id=r[3],
+            station_id=r[0], station_name=r[1],
+            schedule_id=r[2], order_id=r[3],
             operating_date=str(r[4]) if r[4] is not None else None,
             planned_departure=str(r[5]) if r[5] is not None else None,
             actual_departure=str(r[6]) if r[6] is not None else None,
-            delay_departure_min=r[7],
-            delay_arrival_min=r[8],
+            delay_departure_min=r[7], delay_arrival_min=r[8],
             snapshot_time=str(r[9]) if r[9] is not None else None,
         )
         for r in rows
@@ -234,6 +339,59 @@ def stats(db_url: str = Depends(_db_url)):
     return result
 
 
+@app.get("/predict", response_model=XGBPredictionResponse)
+def predict_xgb(
+    request: Request,
+    station_id: str = Query(..., description="ID stacji PKP (np. 33506)"),
+    planned_departure: str = Query(
+        ..., description="Planowany odjazd ISO 8601 (np. 2026-05-31T10:00:00)"
+    ),
+    day_type: Optional[str] = Query(None, description="Typ dnia (auto-detect jeśli pominięty)"),
+    prev_stop_delay_min: float = Query(0.0, description="Opóźnienie poprzedniego przystanku [min]"),
+    planned_sequence: int = Query(1, ge=1, description="Numer przystanku na trasie"),
+    db_url: str = Depends(_db_url),
+):
+    """Predykcja opóźnienia przez XGBoost z wyjaśnieniem SHAP."""
+    model = getattr(request.app.state, "xgb_model", None)
+    if model is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Model XGBoost nie jest załadowany. "
+                "Uruchom: poetry run python -m cns.ml.train_xgb"
+            ),
+        )
+
+    try:
+        dt = datetime.fromisoformat(planned_departure)
+    except ValueError:
+        raise HTTPException(400, f"Nieprawidłowy format daty: '{planned_departure}'. Użyj ISO 8601.")
+
+    if day_type is None:
+        from cns.collector.calendar_service import CalendarService
+        day_type = CalendarService().get_day_type(dt.date()).value
+
+    weather = _fetch_weather(db_url, station_id)
+    station_name = _fetch_station_name(db_url, station_id)
+    features = _build_features(
+        station_id, dt, day_type, prev_stop_delay_min, planned_sequence, weather
+    )
+
+    result = model.predict_with_intervals(features)
+    explanation = model.explain(features)
+
+    return XGBPredictionResponse(
+        station_id=station_id,
+        station_name=station_name,
+        predicted_delay_min=result["prediction"],
+        p75_delay_min=result["p75"],
+        confidence_interval=[result["ci_low"], result["ci_high"]],
+        model="xgboost",
+        model_date=getattr(model, "trained_date", None),
+        explanation=[ExplanationItem(**e) for e in explanation],
+    )
+
+
 @app.get("/predict/baseline", response_model=BaselinePredictionResponse)
 def predict_baseline(
     request: Request,
@@ -241,13 +399,10 @@ def predict_baseline(
     planned_departure: str = Query(
         ..., description="Planowany odjazd ISO 8601 (np. 2026-05-31T10:00:00)"
     ),
-    day_type: Optional[str] = Query(
-        None,
-        description="Typ dnia: WORKING/WEEKEND/HOLIDAY/LONG_WEEKEND/… (auto-detect jeśli pominięty)",
-    ),
+    day_type: Optional[str] = Query(None, description="Typ dnia (auto-detect jeśli pominięty)"),
     db_url: str = Depends(_db_url),
 ):
-    """Predykcja opóźnienia przez model historycznych median (baseline)."""
+    """Predykcja opóźnienia przez model historycznych median (benchmark)."""
     model = getattr(request.app.state, "baseline_model", None)
     if model is None:
         raise HTTPException(
@@ -261,31 +416,13 @@ def predict_baseline(
     try:
         dt = datetime.fromisoformat(planned_departure)
     except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Nieprawidłowy format daty: '{planned_departure}'. Użyj ISO 8601.",
-        )
+        raise HTTPException(400, f"Nieprawidłowy format daty: '{planned_departure}'. Użyj ISO 8601.")
 
     if day_type is None:
         from cns.collector.calendar_service import CalendarService
         day_type = CalendarService().get_day_type(dt.date()).value
 
-    # Pobierz nazwę stacji (opcjonalne – błąd DB nie blokuje odpowiedzi)
-    station_name: Optional[str] = None
-    try:
-        import psycopg
-        with psycopg.connect(db_url) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT name FROM stations WHERE station_id = %s",
-                    (int(station_id),),
-                )
-                row = cur.fetchone()
-                if row:
-                    station_name = row[0]
-    except Exception:
-        pass
-
+    station_name = _fetch_station_name(db_url, station_id)
     pred = model.predict(station_id, dt.hour, day_type)
 
     return BaselinePredictionResponse(

@@ -83,6 +83,7 @@ poetry run cns db-init             # migracje SQL
 poetry run cns db-stats            # statystyki bazy
 poetry run cns api-serve           # FastAPI na 127.0.0.1:8000
 poetry run python -m cns.ml.train_baseline  # trenuj BaselineModel (wymaga mv_training_features)
+poetry run python -m cns.ml.train_xgb      # trenuj XGBoost (≥15% poprawa vs baseline lub abort)
 poetry run pytest -v                    # testy
 docker exec -i cyrk-na-szynach-db psql -U cyrk_na_szynach -d cyrk_na_szynach < plik.sql
 ```
@@ -97,7 +98,7 @@ docker exec -i cyrk-na-szynach-db psql -U cyrk_na_szynach -d cyrk_na_szynach < p
 - Obsługa rate-limit (czeka do kolejnej godziny jeśli limit wyczerpany)
 - Filtrowanie anomalii >200 min
 - FastAPI: `/delays/stations/top`, `/delays/active`, `/stats`
-- Testy jednostkowe: parser + storage + weather + calendar + features + baseline (196 testów łącznie)
+- Testy jednostkowe: parser + storage + weather + calendar + features + baseline + xgb (230 testów)
 - WeatherClient (Open-Meteo): pobieranie pogody co 1h dla ~30 głównych stacji PKP
 
 ## Co jest do zrobienia (backlog)
@@ -106,6 +107,7 @@ docker exec -i cyrk-na-szynach-db psql -U cyrk_na_szynach -d cyrk_na_szynach < p
 - [x] CalendarService + tabela `calendar_events` (Faza 1.2) ✅
 - [x] Feature Store `mv_training_features` (Faza 2.1) ✅
 - [x] BaselineModel + endpoint `/predict/baseline` (Faza 3.1) ✅
+- [x] XGBoostDelayPredictor + endpoint `/predict` (Faza 3.2) ✅
 - [ ] Dashboard / wizualizacja opóźnień (Streamlit?)
 - [ ] Analiza opóźnień per przewoźnik
 - [ ] Alerty (email/push) dla dużych opóźnień

@@ -197,7 +197,8 @@ poetry run cns api-serve [--host HOST] [--port PORT] [--reload]
 | GET | `/delays/stations/top` | `v_station_delay_stats` | Top N stacji z największymi opóźnieniami (7 dni, min. 10 pomiarów). Param: `?limit=10` |
 | GET | `/delays/active` | `v_active_delays` | Aktualnie opóźnione pociągi (status P). Param: `?limit=20` |
 | GET | `/stats` | zliczenia | Liczba rekordów w każdej tabeli |
-| GET | `/predict/baseline` | BaselineModel | Predykcja opóźnienia. Params: `station_id`, `planned_departure` (ISO 8601), `day_type?` |
+| GET | `/predict` | XGBoostDelayPredictor | **Główny endpoint predykcji.** Params: `station_id`, `planned_departure`, `day_type?`, `prev_stop_delay_min?` (domyślnie 0), `planned_sequence?` (domyślnie 1). Zwraca predykcję + CI + SHAP explanation. |
+| GET | `/predict/baseline` | BaselineModel | Predykcja benchmark (historyczna mediana). Params: `station_id`, `planned_departure` (ISO 8601), `day_type?` |
 
 Swagger UI dostępny pod `/docs`, ReDoc pod `/redoc`.
 
@@ -379,6 +380,73 @@ Indeksy:
 | train_operations | ~38 400 | ~150 MB |
 | operations_snapshots | 96 | ~1 MB |
 | disruptions | ~310 | ~5 MB |
+
+### `ml/xgb_model.py` — XGBoostDelayPredictor (Faza 3.2)
+
+Gradient Boosting na widoku `mv_training_features`. Zastępuje baseline jako model produkcyjny.
+
+**Cechy (17 łącznie):**
+```
+Numeryczne (15):
+  hour_of_day          – godzina planowanego odjazdu [0-23]
+  day_of_week          – dzień tygodnia PostgreSQL DOW [0=Sun..6=Sat]
+  month                – miesiąc [1-12]
+  planned_sequence     – numer przystanku na trasie
+  prev_stop_delay_min  ← NAJWAŻNIEJSZY: propagacja opóźnienia z poprzedniego przystanku
+  temperature_c / precipitation_mm / wind_speed_kmh / snowfall_cm / visibility_m
+  is_snowing / is_heavy_rain / is_strong_wind / is_frost / is_dense_fog
+
+Kategoryczne → target encoding (2):
+  station_id           – stacja (zakodowana jako średni delay)
+  day_type             – typ dnia (WORKING/WEEKEND/HOLIDAY/…)
+```
+
+**Architektura i hiperparametry:**
+```python
+XGBRegressor(n_estimators=500, learning_rate=0.05, max_depth=6,
+             subsample=0.8, colsample_bytree=0.8,
+             early_stopping_rounds=20, eval_metric="mae", tree_method="hist")
+```
+
+**Target encoding:**
+Obliczany wyłącznie na zbiorze treningowym (przed splitem). Target encoding z leakage
+jest częstą przyczyną zbyt optymistycznych metryk – tu stosujemy właściwe podejście.
+
+**Przedziały ufności:**
+Obliczane z percentyli residuów walidacyjnych `(actual − predicted)`:
+- `ci_low  = pred + p15(residuals)` – dolna granica 70% CI
+- `p75     = pred + p75(residuals)` – górny kwartyl
+- `ci_high = pred + p85(residuals)` – górna granica 70% CI
+
+**SHAP wyjaśnienia:**
+`shap.TreeExplainer` na XGBRegressor → top-5 cech z wpływem w minutach.
+Wartości SHAP sumują się do predykcji (additive feature attribution).
+
+**Metryki referencyjne (TBD — uruchom train_xgb po zebraniu ≥30 dni danych):**
+```
+Baseline MAE: TBD min
+XGB MAE:      TBD min  (cel: ≥15% poprawa vs baseline)
+XGB RMSE:     TBD min
+Coverage L1:  TBD %
+```
+
+**Feature importance top-10 (TBD):**
+Uruchom `python -m cns.ml.train_xgb` aby wygenerować.
+Oczekiwana kolejność: prev_stop_delay_min, station_id, hour_of_day, day_of_week, ...
+
+**Gate jakości (train_xgb.py):**
+```
+val_MAE <= baseline_MAE * 0.85
+```
+Jeśli warunek nie jest spełniony → model NIE jest zapisywany (sys.exit(2)).
+Zapobiega regresji modelu produkcyjnego.
+
+**Proces trenowania:**
+```bash
+poetry run python -m cns.ml.train_xgb
+```
+Dane: 180 dni z `mv_training_features` (wymaga REFRESH MATERIALIZED VIEW).
+Split chronologiczny 80/20 (nie losowy) – zapobiega data leakage czasowego.
 
 ### `ml/baseline_model.py` — BaselineModel (Faza 3.1)
 
