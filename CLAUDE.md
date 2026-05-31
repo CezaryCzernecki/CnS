@@ -169,7 +169,8 @@ collector_health       ← Faza 5.1
 - Testy: `test_parser.py` + `test_postgres.py` + `test_weather.py` (mocki psycopg3 + requests)
 - WeatherClient (Open-Meteo): pobieranie pogody co 1h dla 30 stacji PKP
 - CalendarService: klasyfikacja dni (HOLIDAY/WEEKEND/LONG_WEEKEND/WINTER_BREAK/SUMMER_BREAK)
-- Testy: `test_calendar.py` (64 testy – algorytm Wielkanocy, Majówka, ferie, strefy)
+- Feature Store `mv_training_features`: LATERAL weather + LAG + flagi binarne, REFRESH CONCURRENTLY
+- Testy: 166 łącznie (parser + postgres + weather + calendar + features)
 
 ### Backlog — kolejność implementacji
 
@@ -177,7 +178,7 @@ collector_health       ← Faza 5.1
 |------|---------|------------|--------|
 | 1.1 | WeatherClient + `weather_observations` | — | ✅ |
 | 1.2 | CalendarService + `calendar_events` | — | ✅ |
-| 2.1 | Feature Store (`mv_training_features`) | 1.1 + 1.2 | ❌ |
+| 2.1 | Feature Store (`mv_training_features`) | 1.1 + 1.2 | ✅ |
 | 3.1 | BaselineModel + `/predict/baseline` | 2.1 | ❌ |
 | 3.2 | XGBoostDelayPredictor + `/predict` | 3.1 | ❌ |
 | 4.1 | Next.js setup (`dashboard/`) | — | ❌ |

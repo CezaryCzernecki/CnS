@@ -25,6 +25,15 @@ def _conn(database_url: str):
         raise ImportError("Zainstaluj: poetry install -E postgres")
 
 
+def _conn_autocommit(database_url: str):
+    """Połączenie z autocommit=True – wymagane przez REFRESH MATERIALIZED VIEW CONCURRENTLY."""
+    try:
+        import psycopg
+        return psycopg.connect(database_url, autocommit=True)
+    except ImportError:
+        raise ImportError("Zainstaluj: poetry install -E postgres")
+
+
 class PostgresStorage:
 
     def __init__(self, database_url: str):
@@ -472,6 +481,27 @@ class PostgresStorage:
             with conn.cursor() as cur:
                 cur.executemany(sql, data)
         logger.info("Zapisano %d wpisów kalendarza", len(data))
+
+    # -------------------------------------------------------------------------
+    # Feature Store
+    # -------------------------------------------------------------------------
+
+    def refresh_features(self) -> None:
+        """REFRESH MATERIALIZED VIEW CONCURRENTLY mv_training_features.
+
+        Wymaga autocommit – REFRESH CONCURRENTLY nie może być wewnątrz transakcji.
+        Wywoływana z wątku demona po każdym save_snapshot().
+        """
+        import time
+        t0 = time.monotonic()
+        try:
+            with _conn_autocommit(self.database_url) as conn:
+                conn.execute(
+                    "REFRESH MATERIALIZED VIEW CONCURRENTLY mv_training_features"
+                )
+            logger.info("Odświeżono mv_training_features (%.1fs)", time.monotonic() - t0)
+        except Exception as e:
+            logger.warning("Błąd odświeżania feature store: %s", e)
 
     # -------------------------------------------------------------------------
     # Diagnostyka

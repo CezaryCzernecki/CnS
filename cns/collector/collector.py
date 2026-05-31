@@ -8,6 +8,7 @@ Zmiany względem v0.2:
 """
 
 import logging
+import threading
 import time
 from datetime import datetime, date
 from typing import Optional, Protocol, runtime_checkable
@@ -227,6 +228,7 @@ class DataCollector:
 
             if not self.dry_run:
                 self.storage.save_snapshot(snapshot)
+                self._refresh_features_async()
             else:
                 logger.info("[DRY RUN] Snapshot: %d pociągów, %d przystanków",
                             snapshot.total_trains, snapshot.total_stops)
@@ -237,6 +239,22 @@ class DataCollector:
             raise
         except Exception as e:
             logger.error("Błąd pobierania /operations: %s", e, exc_info=True)
+
+    def _refresh_features_async(self) -> None:
+        if not hasattr(self.storage, "refresh_features"):
+            return
+        t = threading.Thread(
+            target=self._do_refresh_features,
+            name="feature-refresh",
+            daemon=True,
+        )
+        t.start()
+
+    def _do_refresh_features(self) -> None:
+        try:
+            self.storage.refresh_features()
+        except Exception as e:
+            logger.warning("Błąd odświeżania feature store (wątek): %s", e)
 
     def _fetch_disruptions(self, force: bool = False) -> None:
         logger.info("Pobieram /disruptions...")

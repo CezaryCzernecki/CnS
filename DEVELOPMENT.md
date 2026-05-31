@@ -301,6 +301,11 @@ disruption_affected_routes (id, disruption_id FK, schedule_id, order_id,
 ```sql
 v_active_delays        -- aktualnie opóźnione pociągi (status P)
 v_station_delay_stats  -- statystyki per stacja (ostatnie 7 dni, min. 10 danych)
+
+-- Zmaterializowany (Faza 2.1):
+mv_training_features   -- widok ML: station_stops + weather + calendar + LAG
+                       -- UNIQUE INDEX (id), odświeżany CONCURRENTLY po każdym snapshot
+                       -- Tworzony WITH NO DATA, wypełniany przez refresh_features()
 ```
 
 ### Kalendarz (Faza 1.2)
@@ -373,6 +378,70 @@ Indeksy:
 | train_operations | ~38 400 | ~150 MB |
 | operations_snapshots | 96 | ~1 MB |
 | disruptions | ~310 | ~5 MB |
+
+### `mv_training_features` — Feature Store (Faza 2.1)
+
+Widok zmaterializowany łączący wszystkie źródła danych dla modelu ML.
+Definicja: `migrations/004_features.sql`. Odświeżany przez `PostgresStorage.refresh_features()`.
+
+**Kolumny i ich opis:**
+
+| Kolumna | Źródło | Opis |
+|---------|--------|------|
+| `id` | station_stops.id | PK widoku (wymagany przez CONCURRENTLY) |
+| `station_id` | station_stops | INTEGER – identyfikator stacji |
+| `station_name` | stations.name | Nazwa stacji (LEFT JOIN) |
+| `delay_departure_min` | station_stops | **Target**: opóźnienie odjazdu [min], NULL odfiltrowany |
+| `delay_arrival_min` | station_stops | Target alternatywny: opóźnienie przyjazdu [min] |
+| `operating_date` | planned_departure::date | Data kursowania pociągu |
+| `hour_of_day` | EXTRACT(HOUR …) | Godzina planowanego odjazdu [0-23] |
+| `day_of_week` | EXTRACT(DOW …) | Dzień tygodnia [0=Sun … 6=Sat] |
+| `month` | EXTRACT(MONTH …) | Miesiąc [1-12] |
+| `day_type` | calendar_events (zone IS NULL) | Typ dnia ogólnopolski (HOLIDAY/WEEKEND/…) |
+| `day_type_zone_b` | calendar_events (zone='B') | Typ dnia strefa B (mazowieckie, śląskie, …) |
+| `prev_stop_delay_min` | LAG() | Opóźnienie poprzedniego przystanku; NULL dla pierwszego |
+| `planned_sequence` | station_stops | Numer przystanku na trasie |
+| `sequence_delta` | actual - planned | Zmiana kolejności przystanków |
+| `temperature_c` | weather_observations | Temperatura [°C] |
+| `precipitation_mm` | weather_observations | Opady [mm] |
+| `wind_speed_kmh` | weather_observations | Prędkość wiatru [km/h] |
+| `snowfall_cm` | weather_observations | Opady śniegu [cm] |
+| `visibility_m` | weather_observations | Widzialność [m] |
+| `cloud_cover_pct` | weather_observations | Zachmurzenie [%] |
+| `weather_code` | weather_observations | Kod WMO |
+| `is_snowing` | snowfall_cm > 1 | Opady śniegu >1 cm |
+| `is_heavy_rain` | precipitation_mm > 5 | Intensywny deszcz >5 mm |
+| `is_strong_wind` | wind_speed_kmh > 70 | Silny wiatr >70 km/h |
+| `is_frost` | temperature_c < -10 | Silny mróz < -10°C |
+| `is_dense_fog` | visibility_m < 200 | Gęsta mgła <200 m |
+| `train_status` | train_operations | Filtr: tylko C (zakończone) i P (w trasie) |
+| `snapshot_time` | operations_snapshots.fetched_at | Czas pobrania snapshotu |
+
+**Kluczowe decyzje projektowe:**
+
+- `WITH NO DATA` przy CREATE – migracja bezpieczna na zaludnionej bazie
+- LATERAL JOIN na `weather_observations`: `observed_at <= planned_departure AND is_forecast = FALSE` – bierzemy rzeczywistą obserwację, nie prognozę
+- `station_stops.station_id` = INTEGER, `weather_observations.station_id` = VARCHAR(20) → rzutowanie `ss.station_id::TEXT` w LATERAL
+- `LAG()` daje NULL dla pierwszego przystanku każdego pociągu (propagacja opóźnień)
+
+**Strategia odświeżania:**
+
+```
+REFRESH MATERIALIZED VIEW CONCURRENTLY mv_training_features
+```
+
+- `CONCURRENTLY` = czytelnicy nie są blokowani (brak ExclusiveLock)
+- Wymaga `autocommit=True` na połączeniu (psycopg3 domyślnie ma transakcję)
+- Implementacja: `_conn_autocommit()` w postgres.py → `refresh_features()` → wątek daemon
+- Czas odświeżania: ~10-30s na typowy zbiór 1-2M wierszy (zależy od indeksów)
+- Częstotliwość: po każdym `save_snapshot()` (co 15 min) → widok świeży dla ML
+
+```python
+# Dispatcher w DataCollector (nie blokuje pętli kolektora):
+def _refresh_features_async(self) -> None:
+    t = threading.Thread(target=self._do_refresh_features, daemon=True)
+    t.start()
+```
 
 ### `collector/calendar_service.py` — CalendarService
 
