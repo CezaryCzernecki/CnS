@@ -34,6 +34,17 @@ function fmtTime(ts: string | null): string | null {
   return match ? match[1] : null;
 }
 
+// Usuwa formy prawne z nazwy przewoźnika: "S.A.", "Sp. z o.o.", "sp. z o.o." itp.
+function cleanCarrier(name: string | null): string {
+  if (!name) return "";
+  return name
+    .replace(/\s+S\.A\./gi, "")
+    .replace(/\s+Sp\.\s*z\s*o\.o\./gi, "")
+    .replace(/\s+spółka\s+akcyjna/gi, "")
+    .replace(/\s+spółka\s+z\s+o\.o\./gi, "")
+    .trim();
+}
+
 function rowBgClass(row: ActiveDelay): string {
   if (row.train_status === "X") return "bg-zinc-100/80";
   const delay = row.delay_departure_min;
@@ -52,16 +63,21 @@ const columns: ColumnDef<ActiveDelay>[] = [
     id: "train",
     accessorFn: (row) => row.train_number ?? "",
     header: "Pociąg",
-    cell: ({ row }) => (
-      <div className="flex flex-col gap-0.5 min-w-[80px]">
-        <span className="font-semibold text-zinc-900 font-mono text-sm">
-          {row.original.train_number ?? "—"}
-        </span>
-        {row.original.carrier_name && (
-          <span className="text-xs text-zinc-400">{row.original.carrier_name}</span>
-        )}
-      </div>
-    ),
+    cell: ({ row }) => {
+      const carrier = cleanCarrier(row.original.carrier_name);
+      const trainName = row.original.train_name;
+      const secondary = [carrier, trainName].filter(Boolean).join(" ");
+      return (
+        <div className="flex flex-col gap-0.5 min-w-[90px]">
+          <span className="font-semibold text-zinc-900 font-mono text-sm">
+            {row.original.train_number ?? "—"}
+          </span>
+          {secondary && (
+            <span className="text-xs text-zinc-400">{secondary}</span>
+          )}
+        </div>
+      );
+    },
     filterFn: "includesString",
   },
   {

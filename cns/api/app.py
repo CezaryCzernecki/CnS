@@ -195,6 +195,7 @@ class ActiveDelay(BaseModel):
     train_status: Optional[str] = None
     snapshot_time: Optional[str] = None
     train_number: Optional[str] = None
+    train_name: Optional[str] = None
     carrier_name: Optional[str] = None
     first_station: Optional[str] = None
     first_station_departure: Optional[str] = None
@@ -355,7 +356,7 @@ def active_delays(
                 cur.execute(
                     """
                     SELECT schedule_id, order_id, operating_date, train_status,
-                           snapshot_time, train_number, carrier_name,
+                           snapshot_time, train_number, train_name, carrier_name,
                            first_station, first_station_departure,
                            last_station, last_station_arrival,
                            last_visited_station, last_visited_arrival,
@@ -375,14 +376,14 @@ def active_delays(
             operating_date=str(r[2]) if r[2] is not None else None,
             train_status=r[3],
             snapshot_time=str(r[4]) if r[4] is not None else None,
-            train_number=r[5], carrier_name=r[6],
-            first_station=r[7],
-            first_station_departure=str(r[8]) if r[8] is not None else None,
-            last_station=r[9],
-            last_station_arrival=str(r[10]) if r[10] is not None else None,
-            last_visited_station=r[11],
-            last_visited_arrival=str(r[12]) if r[12] is not None else None,
-            delay_departure_min=r[13], delay_arrival_min=r[14],
+            train_number=r[5], train_name=r[6], carrier_name=r[7],
+            first_station=r[8],
+            first_station_departure=str(r[9]) if r[9] is not None else None,
+            last_station=r[10],
+            last_station_arrival=str(r[11]) if r[11] is not None else None,
+            last_visited_station=r[12],
+            last_visited_arrival=str(r[13]) if r[13] is not None else None,
+            delay_departure_min=r[14], delay_arrival_min=r[15],
         )
         for r in rows
     ]

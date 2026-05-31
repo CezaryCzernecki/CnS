@@ -11,6 +11,7 @@ export interface ActiveDelay {
   train_status: string | null;
   snapshot_time: string | null;
   train_number: string | null;
+  train_name: string | null;
   carrier_name: string | null;
   first_station: string | null;
   first_station_departure: string | null;
