@@ -58,11 +58,11 @@ const columns: ColumnDef<ActiveDelay>[] = [
     filterFn: "includesString",
   },
   {
-    accessorKey: "schedule_id",
+    accessorKey: "train_number",
     header: "Pociąg",
     cell: ({ getValue }) => (
       <span className="font-mono text-xs text-zinc-500">
-        {getValue<number>()}
+        {getValue<string>() ?? "—"}
       </span>
     ),
     enableColumnFilter: false,
