@@ -201,6 +201,16 @@ class ActiveDelay(BaseModel):
     snapshot_time: Optional[str] = None
 
 
+class StationMapPoint(BaseModel):
+    station_id: Optional[int] = None
+    station_name: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    avg_delay_min: Optional[float] = None
+    delay_rate_pct: Optional[float] = None
+    total_stops: int = 0
+
+
 class ExplanationItem(BaseModel):
     feature: str
     impact: float
@@ -337,6 +347,56 @@ def stats(db_url: str = Depends(_db_url)):
     if result.get("last_snapshot") is not None:
         result["last_snapshot"] = str(result["last_snapshot"])
     return result
+
+
+@app.get("/delays/stations/map", response_model=list[StationMapPoint])
+def stations_map(
+    limit: int = Query(default=60, ge=1, le=200, description="Liczba stacji"),
+    db_url: str = Depends(_db_url),
+):
+    """Stacje z opóźnieniami i koordynatami – do wizualizacji na mapie."""
+    try:
+        import psycopg
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Zainstaluj: poetry install -E api")
+
+    try:
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        v.station_id,
+                        v.station_name,
+                        s.latitude,
+                        s.longitude,
+                        v.avg_delay_min,
+                        v.delay_rate_pct,
+                        v.total_stops
+                    FROM v_station_delay_stats v
+                    LEFT JOIN stations s ON v.station_id = s.station_id
+                    WHERE s.latitude IS NOT NULL AND s.longitude IS NOT NULL
+                    ORDER BY v.avg_delay_min DESC NULLS LAST
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
+                rows = cur.fetchall()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Błąd bazy danych: {e}")
+
+    return [
+        StationMapPoint(
+            station_id=r[0],
+            station_name=r[1],
+            latitude=float(r[2]) if r[2] is not None else None,
+            longitude=float(r[3]) if r[3] is not None else None,
+            avg_delay_min=float(r[4]) if r[4] is not None else None,
+            delay_rate_pct=float(r[5]) if r[5] is not None else None,
+            total_stops=r[6] or 0,
+        )
+        for r in rows
+    ]
 
 
 @app.get("/predict", response_model=XGBPredictionResponse)

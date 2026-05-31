@@ -1,0 +1,51 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: cyrk-na-szynach-db
+    environment:
+      POSTGRES_USER: cyrk_na_szynach
+      POSTGRES_PASSWORD: cyrk_na_szynach
+      POSTGRES_DB: cyrk_na_szynach
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cyrk_na_szynach"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  fastapi:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: cyrk-na-szynach-api
+    environment:
+      DATABASE_URL: postgresql://cyrk_na_szynach:cyrk_na_szynach@db:5432/cyrk_na_szynach
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: cyrk-na-szynach-dashboard
+    environment:
+      NEXT_PUBLIC_API_URL: http://fastapi:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - fastapi
+    restart: unless-stopped
+
+volumes:
+  pgdata:

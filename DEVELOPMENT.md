@@ -197,6 +197,7 @@ poetry run cns api-serve [--host HOST] [--port PORT] [--reload]
 | GET | `/delays/stations/top` | `v_station_delay_stats` | Top N stacji z największymi opóźnieniami (7 dni, min. 10 pomiarów). Param: `?limit=10` |
 | GET | `/delays/active` | `v_active_delays` | Aktualnie opóźnione pociągi (status P). Param: `?limit=20` |
 | GET | `/stats` | zliczenia | Liczba rekordów w każdej tabeli |
+| GET | `/delays/stations/map` | JOIN v_station_delay_stats+stations | Stacje z koordynatami GPS i metrykami opóźnień – do mapy. Zwraca tylko stacje z lat/lon. |
 | GET | `/predict` | XGBoostDelayPredictor | **Główny endpoint predykcji.** Params: `station_id`, `planned_departure`, `day_type?`, `prev_stop_delay_min?` (domyślnie 0), `planned_sequence?` (domyślnie 1). Zwraca predykcję + CI + SHAP explanation. |
 | GET | `/predict/baseline` | BaselineModel | Predykcja benchmark (historyczna mediana). Params: `station_id`, `planned_departure` (ISO 8601), `day_type?` |
 
@@ -484,6 +485,57 @@ Metryki: MAE, RMSE, Coverage% (% predykcji z L1).
 
 **Serializacja:** `joblib.dump/load` → `models/baseline_v{YYYYMMDD}.pkl`.
 Ładowanie przy starcie FastAPI przez `lifespan` event.
+
+### Web Dashboard (Faza 4.1)
+
+Next.js 16 App Router + React 19 + Tailwind CSS v4. Katalog: `dashboard/`.
+
+**Uruchomienie lokalnie:**
+```bash
+cd dashboard
+npm run dev          # http://localhost:3000
+# lub produkcja:
+npm run build && npm start
+```
+
+**Struktura katalogów:**
+```
+dashboard/
+├── src/
+│   ├── app/
+│   │   ├── layout.tsx           ← Root layout: NavBar + footer
+│   │   ├── page.tsx             ← redirect → /delays
+│   │   ├── error.tsx            ← Error boundary (unstable_retry – Next.js 16)
+│   │   ├── loading.tsx          ← Skeleton loader (Suspense fallback)
+│   │   ├── globals.css          ← Tailwind v4 (@import "tailwindcss")
+│   │   ├── delays/page.tsx      ← Tablica opóźnień RT (polling 30s, @tanstack/react-table)
+│   │   ├── map/page.tsx         ← Stacje z koordynatami (lista + detail panel)
+│   │   └── predict/page.tsx     ← Widget predykcji XGBoost + baseline
+│   ├── components/
+│   │   └── NavBar.tsx           ← Nawigacja (usePathname, aktywny link)
+│   └── lib/
+│       └── api.ts               ← fetch wrapper, typy TS, wszystkie endpointy
+├── Dockerfile                   ← Multi-stage: node:24-alpine build + runner
+├── next.config.ts               ← output: 'standalone' (dla Dockerfile)
+└── .env.local                   ← NEXT_PUBLIC_API_URL=http://localhost:8000
+```
+
+**Zależności frontendowe:**
+- `recharts` – wykresy (przygotowane do widgetów)
+- `@tanstack/react-table` – sortowalna tablica opóźnień
+- `lucide-react` – ikony
+- `date-fns` – formatowanie dat/czasu
+- `maplibre-gl` + `react-map-gl` – mapa (integracja w kolejnej iteracji)
+
+**Zmienne środowiskowe:**
+```
+NEXT_PUBLIC_API_URL=http://localhost:8000   # lokalny dev
+NEXT_PUBLIC_API_URL=http://fastapi:8000    # Docker Compose
+```
+
+**Docker Compose:**
+Serwis `dashboard` w `docker-compose.yml` – build z `dashboard/Dockerfile`,
+port 3000, `depends_on: [fastapi]`.
 
 ### `mv_training_features` — Feature Store (Faza 2.1)
 

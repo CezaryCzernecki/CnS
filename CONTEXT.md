@@ -84,6 +84,9 @@ poetry run cns db-stats            # statystyki bazy
 poetry run cns api-serve           # FastAPI na 127.0.0.1:8000
 poetry run python -m cns.ml.train_baseline  # trenuj BaselineModel (wymaga mv_training_features)
 poetry run python -m cns.ml.train_xgb      # trenuj XGBoost (≥15% poprawa vs baseline lub abort)
+cd dashboard && npm run dev                # dashboard Next.js na :3000
+cd dashboard && npm run build              # build produkcyjny
+docker compose up --build                  # cały stack: db + fastapi + dashboard
 poetry run pytest -v                    # testy
 docker exec -i cyrk-na-szynach-db psql -U cyrk_na_szynach -d cyrk_na_szynach < plik.sql
 ```
@@ -108,6 +111,7 @@ docker exec -i cyrk-na-szynach-db psql -U cyrk_na_szynach -d cyrk_na_szynach < p
 - [x] Feature Store `mv_training_features` (Faza 2.1) ✅
 - [x] BaselineModel + endpoint `/predict/baseline` (Faza 3.1) ✅
 - [x] XGBoostDelayPredictor + endpoint `/predict` (Faza 3.2) ✅
+- [x] Next.js 16 dashboard setup: /delays /map /predict (Faza 4.1) ✅
 - [ ] Dashboard / wizualizacja opóźnień (Streamlit?)
 - [ ] Analiza opóźnień per przewoźnik
 - [ ] Alerty (email/push) dla dużych opóźnień
