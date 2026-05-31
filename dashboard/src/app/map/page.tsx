@@ -1,132 +1,268 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fetchMapStations, type StationMapPoint } from "@/lib/api";
-import { MapPin, Loader2 } from "lucide-react";
+import { LoadingSpinner } from "@/components/LoadingSpinner";
+import { ErrorBanner } from "@/components/ErrorBanner";
 
-function delayColorHex(avg: number | null): string {
-  if (avg === null) return "#94a3b8";
-  if (avg <= 2) return "#22c55e";
-  if (avg <= 5) return "#eab308";
-  if (avg <= 15) return "#f97316";
-  return "#ef4444";
+// ---------------------------------------------------------------------------
+// Typy
+// ---------------------------------------------------------------------------
+
+interface Tooltip {
+  x: number;
+  y: number;
+  name: string | null;
+  delay: number | null;
+  rate: number | null;
+  stops: number;
 }
 
+// ---------------------------------------------------------------------------
+// Progi kolorów (minuty)
+// ---------------------------------------------------------------------------
+
+const COLOR_SCALE = [
+  { min: 0,  max: 3,        color: "#22c55e", label: "0–3 min" },
+  { min: 3,  max: 8,        color: "#eab308", label: "3–8 min" },
+  { min: 8,  max: 15,       color: "#f97316", label: "8–15 min" },
+  { min: 15, max: Infinity,  color: "#ef4444", label: ">15 min" },
+];
+const NO_DATA_COLOR = "#94a3b8";
+
+// Maplibre expression dla interpolacji koloru wg avg_delay_min
+const CIRCLE_COLOR_EXPR = [
+  "interpolate", ["linear"],
+  ["coalesce", ["get", "avg_delay_min"], 0],
+  0,  "#22c55e",
+  3,  "#22c55e",
+  3,  "#eab308",
+  8,  "#eab308",
+  8,  "#f97316",
+  15, "#f97316",
+  15, "#ef4444",
+  40, "#ef4444",
+] as unknown[];
+
+const CIRCLE_RADIUS_EXPR = [
+  "interpolate", ["linear"],
+  ["coalesce", ["get", "avg_delay_min"], 0],
+  0,  5,
+  3,  7,
+  8,  11,
+  15, 16,
+  30, 20,
+] as unknown[];
+
+// ---------------------------------------------------------------------------
+// Komponent
+// ---------------------------------------------------------------------------
+
 export default function MapPage() {
+  const mapContainer = useRef<HTMLDivElement>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mapRef = useRef<any>(null);
+
   const [stations, setStations] = useState<StationMapPoint[]>([]);
   const [loading, setLoading] = useState(true);
-  const [selected, setSelected] = useState<StationMapPoint | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [tooltip, setTooltip] = useState<Tooltip | null>(null);
 
+  // Pobierz dane stacji
   useEffect(() => {
-    fetchMapStations(60)
+    fetchMapStations(80)
       .then(setStations)
-      .catch(console.error)
+      .catch((e) => setError(e instanceof Error ? e.message : "Błąd pobierania"))
       .finally(() => setLoading(false));
   }, []);
 
-  const withCoords = stations.filter((s) => s.latitude && s.longitude);
+  // Inicjalizacja mapy
+  useEffect(() => {
+    if (!mapContainer.current || mapRef.current) return;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    import("maplibre-gl").then((mgl: any) => {
+      if (!mapContainer.current) return;
+
+      const map = new mgl.Map({
+        container: mapContainer.current,
+        style: "https://demotiles.maplibre.org/style.json",
+        center: [19.1, 52.0],
+        zoom: 6,
+        attributionControl: { compact: true },
+      });
+
+      map.addControl(new mgl.NavigationControl({ showCompass: false }), "top-right");
+      mapRef.current = map;
+    });
+
+    return () => {
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
+    };
+  }, []);
+
+  // Dodaj dane stacji do mapy gdy są gotowe
+  useEffect(() => {
+    if (!mapRef.current || !stations.length) return;
+
+    const map = mapRef.current;
+    const features = stations
+      .filter((s) => s.latitude !== null && s.longitude !== null)
+      .map((s) => ({
+        type: "Feature" as const,
+        geometry: { type: "Point" as const, coordinates: [s.longitude!, s.latitude!] },
+        properties: {
+          station_name: s.station_name,
+          avg_delay_min: s.avg_delay_min,
+          delay_rate_pct: s.delay_rate_pct,
+          total_stops: s.total_stops,
+        },
+      }));
+
+    const geojson = { type: "FeatureCollection" as const, features };
+
+    const addData = () => {
+      const existing = map.getSource("stations");
+      if (existing) {
+        existing.setData(geojson);
+        return;
+      }
+
+      map.addSource("stations", { type: "geojson", data: geojson });
+
+      map.addLayer({
+        id: "stations-circle",
+        type: "circle",
+        source: "stations",
+        paint: {
+          "circle-radius": CIRCLE_RADIUS_EXPR,
+          "circle-color": CIRCLE_COLOR_EXPR,
+          "circle-opacity": 0.88,
+          "circle-stroke-width": 1.5,
+          "circle-stroke-color": "#ffffff",
+        },
+      });
+
+      // Kursor pointer na hover
+      map.on("mouseenter", "stations-circle", () => {
+        map.getCanvas().style.cursor = "pointer";
+      });
+      map.on("mouseleave", "stations-circle", () => {
+        map.getCanvas().style.cursor = "";
+        setTooltip(null);
+      });
+
+      // Tooltip na hover
+      map.on("mousemove", "stations-circle", (e: {
+        point: { x: number; y: number };
+        features?: { properties: Record<string, unknown> }[];
+      }) => {
+        const f = e.features?.[0];
+        if (!f) { setTooltip(null); return; }
+        const p = f.properties;
+        setTooltip({
+          x: e.point.x,
+          y: e.point.y,
+          name: p.station_name as string | null,
+          delay: p.avg_delay_min as number | null,
+          rate: p.delay_rate_pct as number | null,
+          stops: p.total_stops as number,
+        });
+      });
+    };
+
+    if (map.isStyleLoaded()) {
+      addData();
+    } else {
+      map.once("load", addData);
+    }
+  }, [stations]);
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-bold text-zinc-900">Mapa opóźnień</h1>
-        <p className="text-sm text-zinc-500">Średnie opóźnienia wg stacji (ostatnie 7 dni)</p>
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div>
+          <h1 className="text-2xl font-bold text-zinc-900">Mapa opóźnień PKP</h1>
+          <p className="text-sm text-zinc-500">
+            Średnie opóźnienia wg stacji · ostatnie 7 dni · {stations.length} stacji
+          </p>
+        </div>
+        {!loading && !error && (
+          <p className="text-sm text-zinc-400">
+            {stations.filter((s) => s.latitude).length} stacji z koordynatami
+          </p>
+        )}
       </div>
 
-      {loading ? (
-        <div className="flex h-96 items-center justify-center">
-          <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
-        </div>
-      ) : (
-        <div className="flex gap-4">
-          {/* Station list – placeholder for map */}
-          <div className="flex-1 rounded-lg border border-zinc-200 bg-white shadow-sm">
-            <div className="border-b border-zinc-200 bg-zinc-50 px-4 py-3">
-              <h2 className="font-medium text-zinc-700">
-                Stacje z koordynatami ({withCoords.length})
-              </h2>
-              <p className="text-xs text-zinc-400 mt-0.5">
-                Integracja MapLibre GL – podpięta w kolejnej iteracji
-              </p>
-            </div>
+      {error && <ErrorBanner message={error} />}
 
-            {/* Legend */}
-            <div className="flex gap-3 px-4 py-2 text-xs text-zinc-500 border-b border-zinc-100">
-              {[
-                { color: "#22c55e", label: "≤2 min" },
-                { color: "#eab308", label: "≤5 min" },
-                { color: "#f97316", label: "≤15 min" },
-                { color: "#ef4444", label: ">15 min" },
-              ].map(({ color, label }) => (
-                <span key={label} className="flex items-center gap-1">
-                  <span
-                    className="inline-block h-3 w-3 rounded-full"
-                    style={{ backgroundColor: color }}
-                  />
-                  {label}
-                </span>
-              ))}
-            </div>
+      {/* Legenda */}
+      <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-600">
+        <span className="font-medium">Śr. opóźnienie:</span>
+        {COLOR_SCALE.map(({ color, label }) => (
+          <span key={label} className="flex items-center gap-1">
+            <span
+              className="inline-block h-3 w-3 rounded-full border border-white shadow-sm"
+              style={{ backgroundColor: color }}
+            />
+            {label}
+          </span>
+        ))}
+        <span className="flex items-center gap-1">
+          <span
+            className="inline-block h-3 w-3 rounded-full border border-white shadow-sm"
+            style={{ backgroundColor: NO_DATA_COLOR }}
+          />
+          brak danych
+        </span>
+        <span className="text-zinc-400">· rozmiar = wielkość opóźnienia</span>
+      </div>
 
-            <div className="max-h-[60vh] overflow-y-auto divide-y divide-zinc-100">
-              {withCoords.map((s) => (
-                <button
-                  key={s.station_id}
-                  onClick={() => setSelected(selected?.station_id === s.station_id ? null : s)}
-                  className={`w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-zinc-50 transition-colors ${
-                    selected?.station_id === s.station_id ? "bg-blue-50" : ""
-                  }`}
-                >
-                  <MapPin
-                    className="h-4 w-4 flex-shrink-0"
-                    style={{ color: delayColorHex(s.avg_delay_min) }}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium text-zinc-800">
-                      {s.station_name ?? `Stacja ${s.station_id}`}
-                    </p>
-                    <p className="text-xs text-zinc-400">
-                      {s.avg_delay_min !== null
-                        ? `śr. ${s.avg_delay_min.toFixed(1)} min`
-                        : "brak danych"}{" "}
-                      · {s.total_stops} pomiarów
-                    </p>
-                  </div>
-                  {s.delay_rate_pct !== null && (
-                    <span className="text-xs font-medium text-zinc-500">
-                      {s.delay_rate_pct.toFixed(0)}%
-                    </span>
-                  )}
-                </button>
-              ))}
+      {/* Kontener mapy */}
+      <div className="relative overflow-hidden rounded-xl border border-zinc-200 shadow-sm">
+        {loading && (
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-zinc-50">
+            <div className="flex flex-col items-center gap-3">
+              <LoadingSpinner size="lg" />
+              <p className="text-sm text-zinc-500">Pobieranie danych stacji…</p>
             </div>
           </div>
+        )}
 
-          {/* Detail panel */}
-          {selected && (
-            <div className="w-64 rounded-lg border border-zinc-200 bg-white p-4 shadow-sm space-y-3 self-start">
-              <h3 className="font-semibold text-zinc-800">
-                {selected.station_name ?? `Stacja ${selected.station_id}`}
-              </h3>
-              <dl className="space-y-1.5 text-sm">
-                <Row label="Śr. opóźnienie" value={`${selected.avg_delay_min?.toFixed(1) ?? "—"} min`} />
-                <Row label="Odsetek opóźnień" value={`${selected.delay_rate_pct?.toFixed(1) ?? "—"}%`} />
-                <Row label="Pomiarów" value={selected.total_stops} />
-                <Row label="Lat" value={selected.latitude?.toFixed(4) ?? "—"} />
-                <Row label="Lon" value={selected.longitude?.toFixed(4) ?? "—"} />
-              </dl>
-            </div>
-          )}
-        </div>
-      )}
+        <div ref={mapContainer} style={{ height: 580 }} />
+
+        {/* Tooltip */}
+        {tooltip && (
+          <div
+            className="pointer-events-none absolute z-20 w-52 rounded-lg border border-zinc-200 bg-white p-3 shadow-lg"
+            style={{
+              left: Math.min(tooltip.x + 12, window.innerWidth - 230),
+              top: tooltip.y - 10,
+              transform: "translateY(-100%)",
+            }}
+          >
+            <p className="mb-1.5 font-semibold text-zinc-800 text-sm leading-tight">
+              {tooltip.name ?? "Nieznana stacja"}
+            </p>
+            <dl className="space-y-0.5 text-xs">
+              <TooltipRow label="Śr. opóźnienie" value={tooltip.delay !== null ? `${tooltip.delay.toFixed(1)} min` : "—"} />
+              <TooltipRow label="Opóźnionych" value={tooltip.rate !== null ? `${tooltip.rate.toFixed(0)}%` : "—"} />
+              <TooltipRow label="Pomiarów (7 dni)" value={tooltip.stops.toLocaleString("pl-PL")} />
+            </dl>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
-function Row({ label, value }: { label: string; value: string | number }) {
+function TooltipRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex justify-between gap-2">
-      <dt className="text-zinc-500">{label}</dt>
+      <dt className="text-zinc-500">{label}:</dt>
       <dd className="font-medium text-zinc-800">{value}</dd>
     </div>
   );

@@ -486,6 +486,67 @@ Metryki: MAE, RMSE, Coverage% (% predykcji z L1).
 **Serializacja:** `joblib.dump/load` → `models/baseline_v{YYYYMMDD}.pkl`.
 Ładowanie przy starcie FastAPI przez `lifespan` event.
 
+### Web Dashboard – Widoki (Faza 4.2)
+
+#### Widok `/delays` – Tablica opóźnień RT
+
+Dane: `GET /delays/active` · odświeżanie co 60 s · maks. 200 wierszy.
+
+**Funkcje:**
+- Filtr tekstowy na nazwę stacji (input z lupą, kasowanie jednym kliknięciem)
+- Sortowanie po każdej kolumnie kliknięciem nagłówka (domyślnie: opóźnienie ↓)
+- Licznik `Aktualnie opóźnionych: N` (filtrowany po kolumnie station_name przez `@tanstack/react-table`)
+- Odliczanie do kolejnego odświeżenia (badge z sekundami, pomarańczowy gdy ≤10s)
+- Przycisk ręcznego odświeżenia ze spinerkiem
+
+**Konwencja kolorowania wierszy:**
+
+| Opóźnienie | Kolor tła | Kolor badge |
+|-----------|-----------|-------------|
+| < 5 min | `bg-green-50/70` | zielony |
+| 5–15 min | `bg-yellow-50/70` | żółty |
+| > 15 min | `bg-red-50/70` | czerwony |
+| Odwołany | `bg-zinc-50` | szary |
+
+**Komponenty:**
+- `DelayBadge` — kolorowy badge z wartością; progi: <5/5–15/>15 min
+- `StatChip` — chip ze statystykami (liczba pociągów, opóźnionych, maks.)
+- `@tanstack/react-table` z `getFilteredRowModel` + `getSortedRowModel`
+
+#### Widok `/map` – Mapa Polski z MapLibre GL
+
+Dane: `GET /delays/stations/map` · jednorazowe pobranie przy wejściu.
+
+**Mapa:**
+- Biblioteka: `maplibre-gl` v5 (raw API przez `useRef`, lazy `import()`)
+- Styl: `https://demotiles.maplibre.org/style.json` (bezpłatny, bez klucza API)
+- Centrum: `[lng=19.1, lat=52.0, zoom=6]` (Polska)
+- Kontrolka nawigacji: `NavigationControl` (top-right)
+
+**Stacje – layer `circle`:**
+- Rozmiar proporcjonalny do `avg_delay_min` (5–20px), interpolacja liniowa
+- Kolor wg skali:
+
+| Zakres | Kolor hex |
+|--------|-----------|
+| 0–3 min | `#22c55e` (zielony) |
+| 3–8 min | `#eab308` (żółty) |
+| 8–15 min | `#f97316` (pomarańczowy) |
+| >15 min | `#ef4444` (czerwony) |
+| brak danych | `#94a3b8` (szary) |
+
+**Tooltip (hover):**
+- Absolutnie pozycjonowany `<div>` nad kontenerem mapy
+- Treść: nazwa stacji, śr. opóźnienie, % opóźnionych, liczba pomiarów
+- Logika: `map.on("mousemove", "stations-circle", ...)` → state `tooltip: { x, y, props }`
+
+**Architektura React:**
+- Inicjalizacja mapy: `useEffect([], [])` — lazy `import("maplibre-gl")`
+- Dodanie danych: `useEffect([stations])` — po załadowaniu stacji z API
+- Cleanup: `map.remove()` przy odmontowaniu komponentu
+
+**CSS MapLibre:** dodany w `globals.css` przez `@import "maplibre-gl/dist/maplibre-gl.css"`
+
 ### Web Dashboard (Faza 4.1)
 
 Next.js 16 App Router + React 19 + Tailwind CSS v4. Katalog: `dashboard/`.
@@ -521,11 +582,12 @@ dashboard/
 ```
 
 **Zależności frontendowe:**
-- `recharts` – wykresy (przygotowane do widgetów)
-- `@tanstack/react-table` – sortowalna tablica opóźnień
-- `lucide-react` – ikony
-- `date-fns` – formatowanie dat/czasu
-- `maplibre-gl` + `react-map-gl` – mapa (integracja w kolejnej iteracji)
+- `maplibre-gl` v5 – mapa wektorowa (raw API, lazy import, bez klucza API)
+- `react-map-gl` v8 – wrapper React do MapLibre (zainstalowany, do dalszego użycia)
+- `@tanstack/react-table` v8 – sortowanie, filtrowanie kolumn
+- `recharts` v3 – wykresy (gotowe do widgetów w /delays i /predict)
+- `lucide-react` – ikony SVG
+- `date-fns` v4 – formatowanie dat/czasu po polsku
 
 **Zmienne środowiskowe:**
 ```

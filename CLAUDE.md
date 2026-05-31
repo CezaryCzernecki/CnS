@@ -182,7 +182,7 @@ collector_health       ← Faza 5.1
 | 3.1 | BaselineModel + `/predict/baseline` | 2.1 | ✅ |
 | 3.2 | XGBoostDelayPredictor + `/predict` | 3.1 | ✅ |
 | 4.1 | Next.js setup (`dashboard/`) | — | ✅ |
-| 4.2 | Tablica opóźnień + mapa Polski | 4.1 | ❌ |
+| 4.2 | Tablica opóźnień + mapa Polski | 4.1 | ✅ |
 | 4.3 | Widget predykcji | 4.1 + 3.2 | ❌ |
 | 5.1 | Health monitoring + `/health/collector` | — | ❌ |
 

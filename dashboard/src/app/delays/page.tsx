@@ -1,35 +1,52 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { format, parseISO } from "date-fns";
-import { pl } from "date-fns/locale";
-import { RefreshCw, AlertCircle, Train, Clock } from "lucide-react";
+import { RefreshCw, Search, Train, AlertCircle, Clock } from "lucide-react";
 import {
   useReactTable,
   getCoreRowModel,
   getSortedRowModel,
+  getFilteredRowModel,
   flexRender,
   type SortingState,
   type ColumnDef,
+  type ColumnFiltersState,
 } from "@tanstack/react-table";
 import { fetchActiveDelays, type ActiveDelay } from "@/lib/api";
+import { DelayBadge } from "@/components/DelayBadge";
+import { LoadingSpinner } from "@/components/LoadingSpinner";
+import { ErrorBanner } from "@/components/ErrorBanner";
 
-function delayColor(min: number | null) {
-  if (min === null) return "text-zinc-400";
-  if (min <= 0) return "text-green-600";
-  if (min <= 5) return "text-yellow-600";
-  if (min <= 15) return "text-orange-600";
-  return "text-red-600";
-}
+// ---------------------------------------------------------------------------
+// Stałe
+// ---------------------------------------------------------------------------
 
-function formatTimestamp(ts: string | null) {
+const REFRESH_INTERVAL_S = 60;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function formatTime(ts: string | null): string {
   if (!ts) return "—";
   try {
-    return format(parseISO(ts), "HH:mm", { locale: pl });
+    return format(parseISO(ts), "HH:mm");
   } catch {
     return ts.slice(11, 16) || "—";
   }
 }
+
+function rowBgClass(delay: number | null): string {
+  if (delay === null) return "";
+  if (delay < 5) return "bg-green-50/70";
+  if (delay <= 15) return "bg-yellow-50/70";
+  return "bg-red-50/70";
+}
+
+// ---------------------------------------------------------------------------
+// Definicja kolumn
+// ---------------------------------------------------------------------------
 
 const columns: ColumnDef<ActiveDelay>[] = [
   {
@@ -38,52 +55,74 @@ const columns: ColumnDef<ActiveDelay>[] = [
     cell: ({ getValue }) => (
       <span className="font-medium text-zinc-800">{getValue<string>() ?? "—"}</span>
     ),
+    filterFn: "includesString",
+  },
+  {
+    accessorKey: "schedule_id",
+    header: "Pociąg",
+    cell: ({ getValue }) => (
+      <span className="font-mono text-xs text-zinc-500">
+        {getValue<number>()}
+      </span>
+    ),
+    enableColumnFilter: false,
   },
   {
     accessorKey: "delay_departure_min",
     header: "Opóźnienie",
-    cell: ({ getValue }) => {
-      const v = getValue<number | null>();
-      return (
-        <span className={`font-bold ${delayColor(v)}`}>
-          {v !== null ? `${v > 0 ? "+" : ""}${v} min` : "—"}
-        </span>
-      );
-    },
+    cell: ({ getValue }) => (
+      <DelayBadge delay={getValue<number | null>()} />
+    ),
+    enableColumnFilter: false,
   },
   {
     accessorKey: "planned_departure",
-    header: "Planowy odjazd",
-    cell: ({ getValue }) => formatTimestamp(getValue<string | null>()),
-  },
-  {
-    accessorKey: "actual_departure",
-    header: "Rzeczywisty",
-    cell: ({ getValue }) => formatTimestamp(getValue<string | null>()),
-  },
-  {
-    accessorKey: "schedule_id",
-    header: "Rozkład",
+    header: "Plan. odjazd",
     cell: ({ getValue }) => (
-      <span className="font-mono text-xs text-zinc-500">{getValue<number>()}</span>
+      <span className="text-zinc-600">{formatTime(getValue<string | null>())}</span>
     ),
+    enableColumnFilter: false,
+  },
+  {
+    accessorKey: "snapshot_time",
+    header: "Aktualizacja",
+    cell: ({ getValue }) => (
+      <span className="text-xs text-zinc-400">{formatTime(getValue<string | null>())}</span>
+    ),
+    enableColumnFilter: false,
   },
 ];
+
+// ---------------------------------------------------------------------------
+// Strona
+// ---------------------------------------------------------------------------
 
 export default function DelaysPage() {
   const [delays, setDelays] = useState<ActiveDelay[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+  const [lastRefresh, setLastRefresh] = useState<number | null>(null);
+  const [now, setNow] = useState(Date.now());
   const [sorting, setSorting] = useState<SortingState>([
     { id: "delay_departure_min", desc: true },
   ]);
+  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
+
+  // Ticker co sekundę dla odliczania
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const countdown = lastRefresh
+    ? Math.max(0, REFRESH_INTERVAL_S - Math.floor((now - lastRefresh) / 1000))
+    : REFRESH_INTERVAL_S;
 
   const load = useCallback(async () => {
     try {
-      const data = await fetchActiveDelays(100);
+      const data = await fetchActiveDelays(200);
       setDelays(data);
-      setLastRefresh(new Date());
+      setLastRefresh(Date.now());
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Błąd pobierania danych");
@@ -94,78 +133,126 @@ export default function DelaysPage() {
 
   useEffect(() => {
     load();
-    const interval = setInterval(load, 30_000);
+    const interval = setInterval(load, REFRESH_INTERVAL_S * 1000);
     return () => clearInterval(interval);
   }, [load]);
+
+  // Statystyki
+  const delayed = useMemo(
+    () => delays.filter((d) => (d.delay_departure_min ?? 0) > 0).length,
+    [delays]
+  );
+  const maxDelay = useMemo(
+    () => delays.reduce((m, d) => Math.max(m, d.delay_departure_min ?? 0), 0),
+    [delays]
+  );
+
+  // Filtr nazwy stacji
+  const stationFilter =
+    (columnFilters.find((f) => f.id === "station_name")?.value as string) ?? "";
 
   const table = useReactTable({
     data: delays,
     columns,
-    state: { sorting },
+    state: { sorting, columnFilters },
     onSortingChange: setSorting,
+    onColumnFiltersChange: setColumnFilters,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
   });
-
-  const delayed = delays.filter((d) => (d.delay_departure_min ?? 0) > 0).length;
-  const maxDelay = delays.reduce(
-    (m, d) => Math.max(m, d.delay_departure_min ?? 0),
-    0
-  );
 
   return (
     <div className="space-y-4">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-zinc-900">Aktywne opóźnienia</h1>
-          <p className="text-sm text-zinc-500">Aktualizacja co 30 s • pociągi status P</p>
+          <p className="text-sm text-zinc-500">Pociągi w trasie (status P) · odświeżanie co {REFRESH_INTERVAL_S} s</p>
         </div>
-        <button
-          onClick={load}
-          className="flex items-center gap-1.5 rounded-md border border-zinc-200 px-3 py-2 text-sm text-zinc-600 hover:bg-zinc-100"
-        >
-          <RefreshCw className="h-4 w-4" />
-          Odśwież
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Countdown badge */}
+          <span
+            className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium ${
+              countdown <= 10
+                ? "border-orange-200 bg-orange-50 text-orange-700"
+                : "border-zinc-200 bg-zinc-50 text-zinc-600"
+            }`}
+          >
+            <Clock className="h-3 w-3" />
+            {countdown}s
+          </span>
+          <button
+            onClick={load}
+            disabled={loading}
+            className="flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-sm text-zinc-600 hover:bg-zinc-50 disabled:opacity-50"
+          >
+            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+            Odśwież
+          </button>
+        </div>
       </div>
 
-      {/* Stat chips */}
+      {/* Statystyki */}
       {!loading && !error && (
-        <div className="flex gap-3 flex-wrap">
-          <Chip icon={<Train className="h-4 w-4" />} label="Pociągów" value={delays.length} />
-          <Chip
-            icon={<AlertCircle className="h-4 w-4 text-orange-500" />}
-            label="Z opóźnieniem"
+        <div className="flex flex-wrap gap-2">
+          <StatChip icon={<Train className="h-3.5 w-3.5" />} label="Pociągów w trasie" value={delays.length} />
+          <StatChip
+            icon={<AlertCircle className="h-3.5 w-3.5 text-orange-500" />}
+            label="Aktualnie opóźnionych"
             value={delayed}
-            highlight
+            accent
           />
-          <Chip
-            icon={<Clock className="h-4 w-4 text-red-500" />}
+          <StatChip
+            icon={<Clock className="h-3.5 w-3.5 text-red-500" />}
             label="Maks. opóźnienie"
             value={`${maxDelay} min`}
           />
-          {lastRefresh && (
-            <Chip
-              icon={<RefreshCw className="h-4 w-4" />}
-              label="Ostatnia aktualizacja"
-              value={format(lastRefresh, "HH:mm:ss")}
-            />
-          )}
         </div>
       )}
 
-      {/* Table */}
+      {/* Licznik filtrowanych */}
+      {!loading && !error && (
+        <p className="text-sm font-medium text-zinc-600">
+          Aktualnie opóźnionych:{" "}
+          <span className="text-zinc-900 font-bold">{delayed}</span>
+          {stationFilter && (
+            <span className="text-zinc-400 font-normal">
+              {" "}· wyświetlono {table.getFilteredRowModel().rows.length} po filtrze
+            </span>
+          )}
+        </p>
+      )}
+
+      {/* Filtr stacji */}
+      <div className="relative max-w-sm">
+        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
+        <input
+          type="text"
+          placeholder="Filtruj po nazwie stacji..."
+          value={stationFilter}
+          onChange={(e) =>
+            table.getColumn("station_name")?.setFilterValue(e.target.value)
+          }
+          className="w-full rounded-md border border-zinc-300 bg-white py-2 pl-9 pr-3 text-sm placeholder:text-zinc-400 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+        />
+        {stationFilter && (
+          <button
+            onClick={() => table.getColumn("station_name")?.setFilterValue("")}
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600"
+          >
+            ×
+          </button>
+        )}
+      </div>
+
+      {/* Treść */}
       {loading ? (
-        <div className="space-y-2 animate-pulse">
-          {Array.from({ length: 6 }).map((_, i) => (
-            <div key={i} className="h-12 rounded-md bg-zinc-200" />
-          ))}
+        <div className="flex h-48 items-center justify-center">
+          <LoadingSpinner />
         </div>
       ) : error ? (
-        <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-          {error}
-        </div>
+        <ErrorBanner message={error} onRetry={load} />
       ) : (
         <div className="overflow-x-auto rounded-lg border border-zinc-200 bg-white shadow-sm">
           <table className="w-full text-sm">
@@ -175,7 +262,7 @@ export default function DelaysPage() {
                   {hg.headers.map((header) => (
                     <th
                       key={header.id}
-                      className="px-4 py-3 text-left font-medium text-zinc-600 cursor-pointer select-none hover:text-zinc-900"
+                      className="cursor-pointer select-none px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-zinc-500 hover:text-zinc-800"
                       onClick={header.column.getToggleSortingHandler()}
                     >
                       {flexRender(header.column.columnDef.header, header.getContext())}
@@ -189,53 +276,71 @@ export default function DelaysPage() {
                 </tr>
               ))}
             </thead>
-            <tbody>
+            <tbody className="divide-y divide-zinc-100">
               {table.getRowModel().rows.length === 0 ? (
                 <tr>
-                  <td colSpan={columns.length} className="py-12 text-center text-zinc-400">
-                    Brak aktywnych pociągów z opóźnieniem
+                  <td
+                    colSpan={columns.length}
+                    className="py-16 text-center text-sm text-zinc-400"
+                  >
+                    {stationFilter
+                      ? `Brak pociągów dla stacji „${stationFilter}"`
+                      : "Brak aktywnych pociągów z opóźnieniem"}
                   </td>
                 </tr>
               ) : (
-                table.getRowModel().rows.map((row) => (
-                  <tr key={row.id} className="border-b border-zinc-100 hover:bg-zinc-50">
-                    {row.getVisibleCells().map((cell) => (
-                      <td key={cell.id} className="px-4 py-3">
-                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                      </td>
-                    ))}
-                  </tr>
-                ))
+                table.getRowModel().rows.map((row) => {
+                  const delay = row.original.delay_departure_min;
+                  return (
+                    <tr
+                      key={row.id}
+                      className={`transition-colors hover:brightness-95 ${rowBgClass(delay)}`}
+                    >
+                      {row.getVisibleCells().map((cell) => (
+                        <td key={cell.id} className="px-4 py-3">
+                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                        </td>
+                      ))}
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
+          <div className="border-t border-zinc-100 px-4 py-2 text-xs text-zinc-400">
+            {table.getFilteredRowModel().rows.length} / {delays.length} wierszy
+          </div>
         </div>
       )}
     </div>
   );
 }
 
-function Chip({
+// ---------------------------------------------------------------------------
+// Podkomponenty
+// ---------------------------------------------------------------------------
+
+function StatChip({
   icon,
   label,
   value,
-  highlight = false,
+  accent = false,
 }: {
   icon: React.ReactNode;
   label: string;
   value: string | number;
-  highlight?: boolean;
+  accent?: boolean;
 }) {
   return (
     <div
-      className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm ${
-        highlight
+      className={`flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm ${
+        accent
           ? "border-orange-200 bg-orange-50 text-orange-800"
-          : "border-zinc-200 bg-white text-zinc-700"
+          : "border-zinc-200 bg-white text-zinc-600"
       }`}
     >
       {icon}
-      <span className="text-zinc-500">{label}:</span>
+      <span className="text-zinc-500 text-xs">{label}:</span>
       <span className="font-semibold">{value}</span>
     </div>
   );
