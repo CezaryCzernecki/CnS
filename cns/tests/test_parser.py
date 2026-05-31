@@ -27,15 +27,17 @@ MOCK_OPERATIONS = {
             "trainStatus": "P",            # in progress
             "stations": [
                 {
-                    "stationId": 33506,    # int
+                    "stationId": 33506,
                     "plannedSequenceNumber": 1,
                     "actualSequenceNumber": 1,
                     "plannedArrival": "2026-05-27T10:00:00",
                     "actualArrival": "2026-05-27T10:05:00",    # +5 min
                     "plannedDeparture": "2026-05-27T10:02:00",
                     "actualDeparture": "2026-05-27T10:08:00",  # +6 min
-                    "plannedArrivalTime": "10:00:00",
-                    "plannedDepartureTime": "10:02:00",
+                    "arrivalDelayMinutes": 5,
+                    "departureDelayMinutes": 6,
+                    "isConfirmed": True,
+                    "isCancelled": False,
                 },
                 {
                     "stationId": 33512,
@@ -45,8 +47,10 @@ MOCK_OPERATIONS = {
                     "actualArrival": "2026-05-27T12:03:00",    # +3 min
                     "plannedDeparture": "2026-05-27T12:05:00",
                     "actualDeparture": "2026-05-27T12:05:00",  # punktualnie
-                    "plannedArrivalTime": "12:00:00",
-                    "plannedDepartureTime": "12:05:00",
+                    "arrivalDelayMinutes": 3,
+                    "departureDelayMinutes": 0,
+                    "isConfirmed": True,
+                    "isCancelled": False,
                 },
             ],
         },
@@ -74,6 +78,8 @@ MOCK_OPERATIONS = {
                     "actualDeparture": "2026-05-29T00:01:00",
                     "plannedArrival": "2026-05-28T00:01:00",
                     "actualArrival": "2026-05-29T00:01:00",
+                    "isConfirmed": False,
+                    "isCancelled": False,
                 },
             ],
         },
@@ -103,13 +109,23 @@ MOCK_CARRIERS_RESPONSE = {
 MOCK_DISRUPTIONS_RESPONSE = {
     "disruptions": [
         {
-            "id": "d-001",
-            "title": "Roboty torowe Warszawa–Łódź",
-            "description": "Ograniczenie prędkości.",
-            "dateFrom": "2026-05-20T00:00:00",
-            "dateTo": "2026-06-30T23:59:00",
-            "stations": ["33506", "33590"],
-            "carriers": ["IC", "KM"],
+            "disruptionId": 1001,
+            "disruptionTypeCode": "utr_32",
+            "message": "Roboty torowe Warszawa–Łódź. Ograniczenie prędkości.",
+            "startStationId": 33506,
+            "endStationId": 33590,
+            "affectedRoutes": [
+                {
+                    "scheduleId": 2026, "orderId": 513569932,
+                    "operatingDate": "2026-05-27",
+                    "stationId": 33506, "sequenceNumber": 1,
+                },
+                {
+                    "scheduleId": 2026, "orderId": 513569932,
+                    "operatingDate": "2026-05-27",
+                    "stationId": 33590, "sequenceNumber": 5,
+                },
+            ],
         }
     ]
 }
@@ -402,9 +418,42 @@ class TestSlowniki:
     def test_parse_disruptions(self):
         d = parse_disruptions(MOCK_DISRUPTIONS_RESPONSE, datetime.utcnow())
         assert len(d) == 1
-        assert d[0].disruption_id == "d-001"
+        assert d[0].disruption_id == "1001"
         assert "33506" in d[0].affected_stations
-        assert d[0].date_from is not None
+        assert "33590" in d[0].affected_stations
+        assert d[0].message == "Roboty torowe Warszawa–Łódź. Ograniczenie prędkości."
+        assert d[0].disruption_type_code == "utr_32"
+        assert d[0].start_station_id == 33506
 
     def test_parse_disruptions_puste(self):
         assert parse_disruptions({}, datetime.utcnow()) == []
+
+    def test_parse_disruptions_brak_affected_routes(self):
+        raw = {"disruptions": [{"disruptionId": 2, "message": "Test"}]}
+        d = parse_disruptions(raw, datetime.utcnow())
+        assert d[0].affected_stations == []
+
+
+class TestIsConfirmed:
+    def setup_method(self):
+        self.snapshot = parse_operations(MOCK_OPERATIONS, datetime(2026, 5, 27, 19, 45, 0))
+        self.active_train = self.snapshot.trains[0]
+
+    def test_potwierdzony_przystanek(self):
+        assert self.active_train.stops[0].is_confirmed is True
+        assert self.active_train.stops[1].is_confirmed is True
+
+    def test_niepotwierdzony_przystanek(self):
+        scheduled_train = next(t for t in self.snapshot.trains if t.train_status == "S")
+        assert scheduled_train.stops[0].is_confirmed is False
+
+    def test_brak_pola_daje_false(self):
+        raw = {
+            "trains": [{"scheduleId": 1, "orderId": 1, "operatingDate": "2026-05-27",
+                        "trainStatus": "P",
+                        "stations": [{"stationId": 1, "plannedSequenceNumber": 1,
+                                      "actualSequenceNumber": 1}]}],
+            "stations": {},
+        }
+        snapshot = parse_operations(raw, datetime.utcnow())
+        assert snapshot.trains[0].stops[0].is_confirmed is False

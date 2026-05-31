@@ -128,13 +128,15 @@ def _parse_single_train(
     stops_raw = item.get("stations") or item.get("stops") or []
     stops = [_parse_stop(s, station_names) for s in stops_raw]
 
+    # orderId = ID trasy rozkładowej (stabilne). trainOrderId = ID konkretnego
+    # przejazdu, obecny TYLKO gdy różni się od orderId. Nie używamy trainOrderId
+    # jako fallback – miałby inne znaczenie semantyczne przy joinie z schedules.
     return TrainOperation(
         collected_at=fetched_at,
         schedule_id=str(item.get("scheduleId") or ""),
-        order_id=str(item.get("orderId") or item.get("trainOrderId") or ""),
+        order_id=str(item.get("orderId") or ""),
         operating_date=item.get("operatingDate") or "",
         train_status=item.get("trainStatus") or "",
-        # Niedostępne w /operations – zawsze None (dostępne w /schedules)
         train_number=None,
         carrier_code=None,
         stops=stops,
@@ -155,22 +157,35 @@ def _parse_stop(s: dict, station_names: dict[str, str]) -> StationStop:
         actual_arrival=_parse_dt(s.get("actualArrival")),
         planned_departure=_parse_dt(s.get("plannedDeparture")),
         actual_departure=_parse_dt(s.get("actualDeparture")),
+        is_confirmed=bool(s.get("isConfirmed", False)),
+        is_cancelled=bool(s.get("isCancelled", False)),
     )
 
 
 def parse_disruptions(raw: dict, collected_at: datetime) -> list[Disruption]:
-    """Parsuj odpowiedź z /disruptions."""
+    """Parsuj odpowiedź z /disruptions.
+
+    Spec DisruptionDto: disruptionId, disruptionTypeCode, startStationId,
+    endStationId, message, affectedRoutes[].
+    Brak: title, dateFrom, dateTo, carriers — pola nieistniejące w schemacie API.
+    affected_stations wyciągamy z affectedRoutes[].stationId.
+    """
     items = raw.get("disruptions") or raw.get("items") or raw.get("data") or []
     disruptions = []
     for item in items:
+        affected_routes = item.get("affectedRoutes") or []
+        affected_stations = list({
+            str(r["stationId"])
+            for r in affected_routes
+            if r.get("stationId")
+        })
         disruptions.append(Disruption(
-            disruption_id=str(item.get("id") or item.get("disruptionId") or ""),
-            title=item.get("title") or item.get("name") or "",
-            description=item.get("description") or item.get("details"),
-            date_from=_parse_dt(item.get("dateFrom") or item.get("validFrom")),
-            date_to=_parse_dt(item.get("dateTo") or item.get("validTo")),
-            affected_stations=item.get("stations") or item.get("affectedStations") or [],
-            affected_carriers=item.get("carriers") or item.get("affectedCarriers") or [],
+            disruption_id=str(item.get("disruptionId") or item.get("id") or ""),
+            message=item.get("message"),
+            disruption_type_code=item.get("disruptionTypeCode"),
+            start_station_id=item.get("startStationId"),
+            end_station_id=item.get("endStationId"),
+            affected_stations=affected_stations,
             collected_at=collected_at,
         ))
     logger.info("Sparsowano %d utrudnień", len(disruptions))

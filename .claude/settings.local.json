@@ -12,7 +12,9 @@
       "Bash(npm run *)",
       "Bash(command -v node npm npx)",
       "WebFetch(domain:cyrknaszynach.pl)",
-      "Bash(python3 *)"
+      "Bash(python3 *)",
+      "WebFetch(domain:pdp-api.plk-sa.pl)",
+      "Bash(curl -s \"https://pdp-api.plk-sa.pl/swagger/v1/swagger.json\")"
     ]
   }
 }

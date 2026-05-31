@@ -140,11 +140,12 @@ class PostgresStorage:
         schedule_sql = """
             INSERT INTO schedules
                 (schedule_id, order_id, carrier_code, national_number,
-                 commercial_category, operating_date, fetched_at)
-            VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                 train_name, commercial_category, operating_date, fetched_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT (schedule_id, order_id, operating_date) DO UPDATE SET
                 carrier_code=EXCLUDED.carrier_code,
                 national_number=EXCLUDED.national_number,
+                train_name=EXCLUDED.train_name,
                 commercial_category=EXCLUDED.commercial_category,
                 fetched_at=NOW()
             RETURNING id
@@ -170,6 +171,7 @@ class PostgresStorage:
                                 int(route.get("orderId") or 0),
                                 route.get("carrierCode"),
                                 route.get("nationalNumber"),
+                                route.get("name"),
                                 route.get("commercialCategorySymbol"),
                                 op_date,
                             ))
@@ -235,8 +237,8 @@ class PostgresStorage:
             INSERT INTO station_stops
                 (train_op_id, station_id, planned_sequence, actual_sequence,
                  planned_arrival, actual_arrival, planned_departure, actual_departure,
-                 delay_arrival_min, delay_departure_min)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 delay_arrival_min, delay_departure_min, is_confirmed, is_cancelled)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
 
         # Walidacja przed otwarciem połączenia – odfiltrowuje rekordy z niepoprawnymi ID
@@ -289,6 +291,8 @@ class PostgresStorage:
                                 stop.actual_departure,
                                 stop.delay_arrival_minutes,
                                 stop.delay_departure_minutes,
+                                stop.is_confirmed,
+                                stop.is_cancelled,
                             ))
                         except Exception:
                             continue

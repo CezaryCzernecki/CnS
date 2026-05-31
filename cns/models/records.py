@@ -97,6 +97,11 @@ class StationStop:
     # 1221 anomalii >200 min vs 59628 realnych opóźnień ≤200 min.
     MAX_REALISTIC_DELAY = 200
 
+    # isConfirmed=True oznacza że pociąg faktycznie przejechał przez przystanek.
+    # Dla przyszłych przystanków API zwraca isConfirmed=False.
+    is_confirmed: bool = False
+    is_cancelled: bool = False
+
     @property
     def delay_arrival_minutes(self) -> Optional[int]:
         """Opóźnienie przyjazdu w minutach. None jeśli brak danych lub anomalia."""
@@ -208,11 +213,14 @@ class OperationsSnapshot:
 
 @dataclass
 class Disruption:
+    """Utrudnienie kolejowe z /disruptions.
+    Spec: DisruptionDto — brak title/dateFrom/dateTo/carriers w schemacie API.
+    affected_stations to lista stationId z affectedRoutes[].stationId.
+    """
     disruption_id: Optional[str]
-    title: str
-    description: Optional[str]
-    date_from: Optional[datetime]
-    date_to: Optional[datetime]
+    message: Optional[str]
+    disruption_type_code: Optional[str] = None
+    start_station_id: Optional[int] = None
+    end_station_id: Optional[int] = None
     affected_stations: list[str] = field(default_factory=list)
-    affected_carriers: list[str] = field(default_factory=list)
     collected_at: datetime = field(default_factory=datetime.utcnow)
