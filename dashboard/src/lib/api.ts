@@ -69,6 +69,16 @@ export interface DbStats {
 // Fetch helper
 // ---------------------------------------------------------------------------
 
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 async function apiFetch<T>(
   path: string,
   params?: Record<string, string | number>,
@@ -83,7 +93,14 @@ async function apiFetch<T>(
     ...options,
   });
   if (!res.ok) {
-    throw new Error(`API ${res.status} ${res.statusText}: ${path}`);
+    let detail = `${res.status} ${res.statusText}`;
+    try {
+      const body = await res.json();
+      if (typeof body?.detail === "string") detail = body.detail;
+    } catch {
+      // ignore parse errors
+    }
+    throw new ApiError(detail, res.status);
   }
   return res.json() as Promise<T>;
 }

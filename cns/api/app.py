@@ -251,7 +251,7 @@ def health():
 
 @app.get("/delays/stations/top", response_model=list[StationDelayStat])
 def top_delayed_stations(
-    limit: int = Query(default=10, ge=1, le=100, description="Liczba stacji"),
+    limit: int = Query(default=10, ge=1, le=500, description="Liczba stacji"),
     db_url: str = Depends(_db_url),
 ):
     """Stacje z największymi średnimi opóźnieniami w ostatnich 7 dniach (min. 10 pomiarów)."""
@@ -414,12 +414,31 @@ def predict_xgb(
     """Predykcja opóźnienia przez XGBoost z wyjaśnieniem SHAP."""
     model = getattr(request.app.state, "xgb_model", None)
     if model is None:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Model XGBoost nie jest załadowany. "
-                "Uruchom: poetry run python -m cns.ml.train_xgb"
-            ),
+        # Spróbuj baseline jako fallback gdy XGB nie gotowy
+        baseline = getattr(request.app.state, "baseline_model", None)
+        if baseline is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Model w trakcie ładowania. Uruchom: python -m cns.ml.train_xgb",
+            )
+        # Baseline jako tymczasowy fallback – zwróć w formacie XGBPredictionResponse
+        try:
+            dt_fb = datetime.fromisoformat(planned_departure)
+        except ValueError:
+            raise HTTPException(400, f"Nieprawidłowy format daty: '{planned_departure}'.")
+        if day_type is None:
+            from cns.collector.calendar_service import CalendarService
+            day_type = CalendarService().get_day_type(dt_fb.date()).value
+        pred_fb = baseline.predict(station_id, dt_fb.hour, day_type)
+        return XGBPredictionResponse(
+            station_id=station_id,
+            station_name=None,
+            predicted_delay_min=pred_fb.median_delay or 0.0,
+            p75_delay_min=pred_fb.p75_delay,
+            confidence_interval=None,
+            model="baseline_fallback",
+            model_date=getattr(baseline, "trained_date", None),
+            explanation=None,
         )
 
     try:
@@ -467,10 +486,7 @@ def predict_baseline(
     if model is None:
         raise HTTPException(
             status_code=503,
-            detail=(
-                "Model baseline nie jest załadowany. "
-                "Uruchom: poetry run python -m cns.ml.train_baseline"
-            ),
+            detail="Model w trakcie ładowania. Uruchom: python -m cns.ml.train_baseline",
         )
 
     try:

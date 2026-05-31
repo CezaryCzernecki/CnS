@@ -488,6 +488,81 @@ Metryki: MAE, RMSE, Coverage% (% predykcji z L1).
 
 ### Web Dashboard – Widoki (Faza 4.2)
 
+#### Widok `/predict` – Widget predykcji
+
+**Formularz:**
+- Autocomplete stacji przez natywny `<datalist>` (fetch `/delays/stations/top?limit=200` przy mountowaniu)
+- Mapowanie `station_name → station_id` przez lookup po tablicy stations
+- `<input type="datetime-local">` dla odjazdu
+- Number input dla `prev_stop_delay_min` (default 0)
+
+**Wynik predykcji:**
+- Duża liczba kolorem (zielony<5/żółty5-15/czerwony>15 min)
+- `DelayBadge` z odpowiednim progiem
+- Paski percentylowe:
+  - 50% szansa na mniej niż `predicted_delay_min` min
+  - 75% szansa na mniej niż `p75_delay_min` min
+  - Pasek CI 70%: `[ci_low, ci_high]` narysowany jako `<div>` na siatce
+- SHAP waterfall (top-5):
+  - emoji + polska nazwa cechy (tabela `FEATURE_META`)
+  - pasek proporcjonalny do wartości absolutnej impact
+  - kolor: pomarańczowy = zwiększa opóźnienie, niebieski = zmniejsza
+  - wartość wejściowa cechy w nawiasie
+
+**Historia predykcji (localStorage):**
+- Klucz: `cns_predict_history` (JSON, max 5 elementów)
+- Zawartość: station_id, station_name, departure, prev_delay, predicted_min, model, timestamp
+- Wyświetlane jako mini-karty z DelayBadge i godziną predykcji
+
+**Fallback w /predict:**
+Jeśli XGBoost nie załadowany → API zwraca predykcję baseline (model `"baseline_fallback"`).
+Jeśli oba modele niedostępne → 503 z komunikatem "Model w trakcie ładowania".
+
+---
+
+**Endpoint `GET /predict` — szczegóły:**
+
+```
+GET /predict?station_id=33506&planned_departure=2026-05-31T10:00:00&prev_stop_delay_min=5
+```
+
+**Parametry:**
+| Param | Typ | Domyślny | Opis |
+|-------|-----|----------|------|
+| `station_id` | str | wymagany | ID stacji PKP (np. 33506) |
+| `planned_departure` | str | wymagany | ISO 8601: `2026-05-31T10:00:00` |
+| `day_type` | str | auto-detect | WORKING/WEEKEND/HOLIDAY/… (CalendarService) |
+| `prev_stop_delay_min` | float | 0 | Opóźnienie z poprzedniego przystanku [min] |
+| `planned_sequence` | int | 1 | Numer przystanku na trasie |
+
+**Response 200:**
+```json
+{
+  "station_id": "33506",
+  "station_name": "Warszawa Centralna",
+  "predicted_delay_min": 12.3,
+  "p75_delay_min": 18.1,
+  "confidence_interval": [6.2, 21.4],
+  "model": "xgboost",
+  "model_date": "2026-05-31",
+  "explanation": [
+    {"feature": "prev_stop_delay_min", "impact": 8.3, "value": 5},
+    {"feature": "station_id",          "impact": 2.1, "value": "33506"},
+    {"feature": "hour_of_day",         "impact": 1.4, "value": 10},
+    {"feature": "is_heavy_rain",       "impact": 0.8, "value": false},
+    {"feature": "day_of_week",         "impact": -0.3, "value": 6}
+  ]
+}
+```
+
+**Response 503** (model niedostępny):
+```json
+{"detail": "Model w trakcie ładowania. Uruchom: python -m cns.ml.train_xgb"}
+```
+
+**Logika SHAP:**
+`shap.TreeExplainer` zwraca wektor wartości SHAP dla każdej cechy. Wartości sumują się do predykcji minus oczekiwana wartość modelu (baseline SHAP). Cecha z `impact > 0` zwiększa przewidywane opóźnienie, `impact < 0` zmniejsza. Frontend sortuje po `|impact|` malejąco i pokazuje top-5 z emoji i polską nazwą.
+
 #### Widok `/delays` – Tablica opóźnień RT
 
 Dane: `GET /delays/active` · odświeżanie co 60 s · maks. 200 wierszy.
