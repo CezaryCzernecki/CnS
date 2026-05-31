@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState, useCallback, useMemo } from "react";
-import { format, parseISO } from "date-fns";
 import { RefreshCw, Search, Train, AlertCircle, Clock } from "lucide-react";
 import {
   useReactTable,
@@ -28,16 +27,9 @@ const REFRESH_INTERVAL_S = 60;
 // Helpers
 // ---------------------------------------------------------------------------
 
-function formatTime(ts: string | null): string {
-  if (!ts) return "—";
-  try {
-    return format(parseISO(ts), "HH:mm");
-  } catch {
-    return ts.slice(11, 16) || "—";
-  }
-}
-
-function rowBgClass(delay: number | null): string {
+function rowBgClass(row: ActiveDelay): string {
+  if (row.train_status === "X") return "bg-zinc-100/80";
+  const delay = row.delay_departure_min;
   if (delay === null) return "";
   if (delay < 5) return "bg-green-50/70";
   if (delay <= 15) return "bg-yellow-50/70";
@@ -50,45 +42,56 @@ function rowBgClass(delay: number | null): string {
 
 const columns: ColumnDef<ActiveDelay>[] = [
   {
-    accessorKey: "station_name",
-    header: "Stacja",
-    cell: ({ getValue }) => (
-      <span className="font-medium text-zinc-800">{getValue<string>() ?? "—"}</span>
+    id: "train",
+    accessorFn: (row) => row.train_number ?? "",
+    header: "Pociąg",
+    cell: ({ row }) => (
+      <div className="flex flex-col gap-0.5 min-w-[80px]">
+        <span className="font-semibold text-zinc-900 font-mono text-sm">
+          {row.original.train_number ?? "—"}
+        </span>
+        {row.original.train_name && (
+          <span className="text-xs text-zinc-400">{row.original.train_name}</span>
+        )}
+      </div>
     ),
     filterFn: "includesString",
   },
   {
-    accessorKey: "train_number",
-    header: "Pociąg",
+    accessorKey: "first_station",
+    header: "Od",
     cell: ({ getValue }) => (
-      <span className="font-mono text-xs text-zinc-500">
-        {getValue<string>() ?? "—"}
-      </span>
+      <span className="text-zinc-700 text-sm">{getValue<string>() ?? "—"}</span>
+    ),
+    enableColumnFilter: false,
+  },
+  {
+    accessorKey: "last_station",
+    header: "Do",
+    cell: ({ getValue }) => (
+      <span className="font-medium text-zinc-800 text-sm">{getValue<string>() ?? "—"}</span>
+    ),
+    enableColumnFilter: false,
+  },
+  {
+    accessorKey: "last_visited_station",
+    header: "Ostatnia stacja",
+    cell: ({ getValue }) => (
+      <span className="text-zinc-600 text-sm">{getValue<string>() ?? "—"}</span>
     ),
     enableColumnFilter: false,
   },
   {
     accessorKey: "delay_departure_min",
     header: "Opóźnienie",
-    cell: ({ getValue }) => (
-      <DelayBadge delay={getValue<number | null>()} />
-    ),
-    enableColumnFilter: false,
-  },
-  {
-    accessorKey: "planned_departure",
-    header: "Plan. odjazd",
-    cell: ({ getValue }) => (
-      <span className="text-zinc-600">{formatTime(getValue<string | null>())}</span>
-    ),
-    enableColumnFilter: false,
-  },
-  {
-    accessorKey: "snapshot_time",
-    header: "Aktualizacja",
-    cell: ({ getValue }) => (
-      <span className="text-xs text-zinc-400">{formatTime(getValue<string | null>())}</span>
-    ),
+    cell: ({ row }) =>
+      row.original.train_status === "X" ? (
+        <span className="inline-flex items-center rounded-full bg-zinc-200 px-2 py-0.5 text-xs font-semibold text-zinc-600">
+          Odwołany
+        </span>
+      ) : (
+        <DelayBadge delay={row.original.delay_departure_min} />
+      ),
     enableColumnFilter: false,
   },
 ];
@@ -139,7 +142,11 @@ export default function DelaysPage() {
 
   // Statystyki
   const delayed = useMemo(
-    () => delays.filter((d) => (d.delay_departure_min ?? 0) > 0).length,
+    () => delays.filter((d) => d.train_status === "P" && (d.delay_departure_min ?? 0) > 0).length,
+    [delays]
+  );
+  const cancelled = useMemo(
+    () => delays.filter((d) => d.train_status === "X").length,
     [delays]
   );
   const maxDelay = useMemo(
@@ -147,9 +154,9 @@ export default function DelaysPage() {
     [delays]
   );
 
-  // Filtr nazwy stacji
-  const stationFilter =
-    (columnFilters.find((f) => f.id === "station_name")?.value as string) ?? "";
+  // Filtr numeru pociągu
+  const trainFilter =
+    (columnFilters.find((f) => f.id === "train")?.value as string) ?? "";
 
   const table = useReactTable({
     data: delays,
@@ -203,6 +210,13 @@ export default function DelaysPage() {
             value={delayed}
             accent
           />
+          {cancelled > 0 && (
+            <StatChip
+              icon={<AlertCircle className="h-3.5 w-3.5 text-zinc-500" />}
+              label="Odwołanych"
+              value={cancelled}
+            />
+          )}
           <StatChip
             icon={<Clock className="h-3.5 w-3.5 text-red-500" />}
             label="Maks. opóźnienie"
@@ -216,7 +230,7 @@ export default function DelaysPage() {
         <p className="text-sm font-medium text-zinc-600">
           Aktualnie opóźnionych:{" "}
           <span className="text-zinc-900 font-bold">{delayed}</span>
-          {stationFilter && (
+          {trainFilter && (
             <span className="text-zinc-400 font-normal">
               {" "}· wyświetlono {table.getFilteredRowModel().rows.length} po filtrze
             </span>
@@ -224,21 +238,21 @@ export default function DelaysPage() {
         </p>
       )}
 
-      {/* Filtr stacji */}
+      {/* Filtr numeru pociągu */}
       <div className="relative max-w-sm">
         <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
         <input
           type="text"
-          placeholder="Filtruj po nazwie stacji..."
-          value={stationFilter}
+          placeholder="Filtruj po numerze pociągu..."
+          value={trainFilter}
           onChange={(e) =>
-            table.getColumn("station_name")?.setFilterValue(e.target.value)
+            table.getColumn("train")?.setFilterValue(e.target.value)
           }
           className="w-full rounded-md border border-zinc-300 bg-white py-2 pl-9 pr-3 text-sm placeholder:text-zinc-400 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
         />
-        {stationFilter && (
+        {trainFilter && (
           <button
-            onClick={() => table.getColumn("station_name")?.setFilterValue("")}
+            onClick={() => table.getColumn("train")?.setFilterValue("")}
             className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600"
           >
             ×
@@ -283,18 +297,17 @@ export default function DelaysPage() {
                     colSpan={columns.length}
                     className="py-16 text-center text-sm text-zinc-400"
                   >
-                    {stationFilter
-                      ? `Brak pociągów dla stacji „${stationFilter}"`
+                    {trainFilter
+                      ? `Brak pociągów o numerze „${trainFilter}"`
                       : "Brak aktywnych pociągów z opóźnieniem"}
                   </td>
                 </tr>
               ) : (
                 table.getRowModel().rows.map((row) => {
-                  const delay = row.original.delay_departure_min;
                   return (
                     <tr
                       key={row.id}
-                      className={`transition-colors hover:brightness-95 ${rowBgClass(delay)}`}
+                      className={`transition-colors hover:brightness-95 ${rowBgClass(row.original)}`}
                     >
                       {row.getVisibleCells().map((cell) => (
                         <td key={cell.id} className="px-4 py-3">

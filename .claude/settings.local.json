@@ -7,7 +7,10 @@
       "Bash(poetry install *)",
       "Bash(poetry lock *)",
       "Bash(gh auth *)",
-      "Bash(xargs sed -i 's/toralert/cns/g')"
+      "Bash(xargs sed -i 's/toralert/cns/g')",
+      "Bash(docker exec *)",
+      "Bash(npm run *)",
+      "Bash(command -v node npm npx)"
     ]
   }
 }

@@ -5,17 +5,18 @@ const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 // ---------------------------------------------------------------------------
 
 export interface ActiveDelay {
-  station_id: number | null;
-  station_name: string | null;
   schedule_id: number;
   order_id: number;
   operating_date: string | null;
+  train_status: string | null;
+  snapshot_time: string | null;
   train_number: string | null;
-  planned_departure: string | null;
-  actual_departure: string | null;
+  train_name: string | null;
+  first_station: string | null;
+  last_station: string | null;
+  last_visited_station: string | null;
   delay_departure_min: number | null;
   delay_arrival_min: number | null;
-  snapshot_time: string | null;
 }
 
 export interface StationStat {

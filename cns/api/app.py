@@ -189,17 +189,18 @@ class StationDelayStat(BaseModel):
 
 
 class ActiveDelay(BaseModel):
-    station_id: Optional[int] = None
-    station_name: Optional[str] = None
     schedule_id: int
     order_id: int
     operating_date: Optional[str] = None
+    train_status: Optional[str] = None
+    snapshot_time: Optional[str] = None
     train_number: Optional[str] = None
-    planned_departure: Optional[str] = None
-    actual_departure: Optional[str] = None
+    train_name: Optional[str] = None
+    first_station: Optional[str] = None
+    last_station: Optional[str] = None
+    last_visited_station: Optional[str] = None
     delay_departure_min: Optional[int] = None
     delay_arrival_min: Optional[int] = None
-    snapshot_time: Optional[str] = None
 
 
 class StationMapPoint(BaseModel):
@@ -350,9 +351,10 @@ def active_delays(
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT station_id, station_name, schedule_id, order_id,
-                           operating_date, train_number, planned_departure, actual_departure,
-                           delay_departure_min, delay_arrival_min, snapshot_time
+                    SELECT schedule_id, order_id, operating_date, train_status,
+                           snapshot_time, train_number, train_name,
+                           first_station, last_station, last_visited_station,
+                           delay_departure_min, delay_arrival_min
                     FROM v_active_delays
                     LIMIT %s
                     """,
@@ -364,14 +366,14 @@ def active_delays(
 
     return [
         ActiveDelay(
-            station_id=r[0], station_name=r[1],
-            schedule_id=r[2], order_id=r[3],
-            operating_date=str(r[4]) if r[4] is not None else None,
-            train_number=r[5],
-            planned_departure=str(r[6]) if r[6] is not None else None,
-            actual_departure=str(r[7]) if r[7] is not None else None,
-            delay_departure_min=r[8], delay_arrival_min=r[9],
-            snapshot_time=str(r[10]) if r[10] is not None else None,
+            schedule_id=r[0], order_id=r[1],
+            operating_date=str(r[2]) if r[2] is not None else None,
+            train_status=r[3],
+            snapshot_time=str(r[4]) if r[4] is not None else None,
+            train_number=r[5], train_name=r[6],
+            first_station=r[7], last_station=r[8],
+            last_visited_station=r[9],
+            delay_departure_min=r[10], delay_arrival_min=r[11],
         )
         for r in rows
     ]
