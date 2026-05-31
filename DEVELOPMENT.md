@@ -197,6 +197,7 @@ poetry run cns api-serve [--host HOST] [--port PORT] [--reload]
 | GET | `/delays/stations/top` | `v_station_delay_stats` | Top N stacji z największymi opóźnieniami (7 dni, min. 10 pomiarów). Param: `?limit=10` |
 | GET | `/delays/active` | `v_active_delays` | Aktualnie opóźnione pociągi (status P). Param: `?limit=20` |
 | GET | `/stats` | zliczenia | Liczba rekordów w każdej tabeli |
+| GET | `/health/collector` | collector_health | Stan kolektora: status OK/WARNING/CRITICAL, pokrycie 24h, luki. 503 gdy brak danych. |
 | GET | `/delays/stations/map` | JOIN v_station_delay_stats+stations | Stacje z koordynatami GPS i metrykami opóźnień – do mapy. Zwraca tylko stacje z lat/lon. |
 | GET | `/predict` | XGBoostDelayPredictor | **Główny endpoint predykcji.** Params: `station_id`, `planned_departure`, `day_type?`, `prev_stop_delay_min?` (domyślnie 0), `planned_sequence?` (domyślnie 1). Zwraca predykcję + CI + SHAP explanation. |
 | GET | `/predict/baseline` | BaselineModel | Predykcja benchmark (historyczna mediana). Params: `station_id`, `planned_departure` (ISO 8601), `day_type?` |
@@ -381,6 +382,49 @@ Indeksy:
 | train_operations | ~38 400 | ~150 MB |
 | operations_snapshots | 96 | ~1 MB |
 | disruptions | ~310 | ~5 MB |
+
+### `collector/health.py` — HealthChecker (Faza 5.1)
+
+Monitoring procesu kolekcjonowania danych. Wykrywa luki i zapisuje status do `collector_health`.
+
+**Progi alertów:**
+
+| Status | Warunek | Opis |
+|--------|---------|------|
+| `CRITICAL` | `minutes_since_snapshot >= 30` lub brak snapshotów | Kolektor prawdopodobnie nie działa |
+| `WARNING` | `snapshots_last_24h < int(96 * 0.80) = 76` | Pokrycie <80% – możliwe restartowanie lub rate-limit |
+| `OK` | Oba warunki spełnione | Kolektor działa poprawnie |
+
+**Luka (gap):** przerwa między kolejnymi snapshotami > 20 minut.
+Oczekiwany interwał: co 15 minut → luka to co najmniej jeden pominięty cykl.
+
+**Architektura:**
+```
+compute_health_status(snapshots: list[datetime]) → HealthStatus  ← czysta funkcja (testowalana bez DB)
+HealthChecker._fetch_recent_snapshots()  → zapytanie do operations_snapshots
+HealthChecker.check()                   → fetch + compute + log
+HealthChecker.save_check(status)        → INSERT do collector_health
+```
+
+**Harmonogram:** wywoływane przez `DataCollector._run_health_check()` co 5 minut w `_tick()`.
+Dostępne tylko gdy `storage` jest `PostgresStorage` (guard: `hasattr(storage, "database_url")`).
+
+**Endpoint `GET /health/collector`:**
+```json
+{
+  "status": "OK",
+  "last_snapshot_at": "2026-05-31T14:30:00+00:00",
+  "minutes_since_last_snapshot": 8,
+  "snapshots_last_24h": 93,
+  "expected_24h": 96,
+  "coverage_pct": 96.9,
+  "gaps_last_24h": [
+    {"from_time": "2026-05-31T02:00:00+00:00", "to_time": "2026-05-31T02:45:00+00:00", "gap_minutes": 45}
+  ],
+  "checked_at": "2026-05-31T14:38:00+00:00"
+}
+```
+Status 503 gdy brak wpisów w `collector_health` (kolektor nie uruchomiony).
 
 ### `ml/xgb_model.py` — XGBoostDelayPredictor (Faza 3.2)
 

@@ -85,6 +85,7 @@ poetry run cns api-serve           # FastAPI na 127.0.0.1:8000
 poetry run python -m cns.ml.train_baseline  # trenuj BaselineModel (wymaga mv_training_features)
 poetry run python -m cns.ml.train_xgb      # trenuj XGBoost (≥15% poprawa vs baseline lub abort)
 cd dashboard && npm run dev                # dashboard Next.js na :3000
+curl http://localhost:8000/health/collector | python3 -m json.tool  # sprawdź monitoring
 cd dashboard && npm run build              # build produkcyjny
 docker compose up --build                  # cały stack: db + fastapi + dashboard
 poetry run pytest -v                    # testy

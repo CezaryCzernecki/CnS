@@ -15,6 +15,7 @@ from typing import Optional, Protocol, runtime_checkable
 
 from cns.collector.calendar_service import CalendarService
 from cns.collector.client import PKPClient, RateLimitError
+from cns.collector.health import HealthChecker
 from cns.collector.parser import (
     parse_carriers, parse_operations, parse_stations,
 )
@@ -98,6 +99,11 @@ class DataCollector:
         self._last_schedules_date: Optional[date] = None
         self._last_operations_version: Optional[str] = None
         self._last_calendar_year: Optional[int] = None
+        self._last_health: Optional[float] = None
+        self._health_checker: Optional[HealthChecker] = None
+        if hasattr(storage, "database_url") and not dry_run:
+            self._health_checker = HealthChecker(storage.database_url)
+        self._health_interval = 5 * 60  # co 5 minut
 
     def run(self) -> None:
         logger.info("🚆 TorAlert DataCollector start (dry_run=%s)", self.dry_run)
@@ -192,6 +198,24 @@ class DataCollector:
             self._last_weather = now
         self._fetch_schedules_if_needed()
         self._update_calendar_if_needed()
+        if self._health_checker and (
+            self._last_health is None or (now - self._last_health) >= self._health_interval
+        ):
+            self._run_health_check()
+            self._last_health = now
+
+    def _run_health_check(self) -> None:
+        try:
+            status = self._health_checker.check()
+            self._health_checker.save_check(status)
+            if status.status == "CRITICAL":
+                logger.error("🚨 Health CRITICAL: %s min bez snapshotu", status.minutes_since_snapshot)
+            elif status.status == "WARNING":
+                logger.warning("⚠️  Health WARNING: %d/%d snapshotów, %d luk",
+                               status.snapshots_last_24h, status.expected_snapshots_24h,
+                               len(status.gaps))
+        except Exception as e:
+            logger.error("Health check nieudany: %s", e)
 
     def _update_calendar_if_needed(self) -> None:
         today = date.today()

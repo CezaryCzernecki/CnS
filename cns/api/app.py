@@ -249,6 +249,51 @@ def health():
     return {"status": "ok", "service": "cyrk_na_szynach", "version": "1.0.0"}
 
 
+@app.get("/health/collector")
+def health_collector(db_url: str = Depends(_db_url)):
+    """Stan kolektora danych: ostatni snapshot, pokrycie 24h, wykryte luki."""
+    try:
+        import psycopg
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Zainstaluj: poetry install -E api")
+
+    try:
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT check_time, last_snapshot_at, minutes_since_snapshot,
+                           snapshots_last_24h, expected_snapshots_24h, gaps, status
+                    FROM collector_health
+                    ORDER BY check_time DESC
+                    LIMIT 1
+                    """
+                )
+                row = cur.fetchone()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Błąd bazy danych: {e}")
+
+    if row is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Brak danych health check. Kolektor nie uruchomiony lub tabela pusta.",
+        )
+
+    check_time, last_snap, minutes_since, snaps_24h, expected_24h, gaps, status = row
+    coverage = round(snaps_24h / expected_24h * 100, 1) if expected_24h else 0.0
+
+    return {
+        "status": status,
+        "last_snapshot_at": str(last_snap) if last_snap else None,
+        "minutes_since_last_snapshot": minutes_since,
+        "snapshots_last_24h": snaps_24h,
+        "expected_24h": expected_24h,
+        "coverage_pct": coverage,
+        "gaps_last_24h": gaps or [],
+        "checked_at": str(check_time),
+    }
+
+
 @app.get("/delays/stations/top", response_model=list[StationDelayStat])
 def top_delayed_stations(
     limit: int = Query(default=10, ge=1, le=500, description="Liczba stacji"),
