@@ -10,6 +10,7 @@ export interface ActiveDelay {
   schedule_id: number;
   order_id: number;
   operating_date: string | null;
+  train_number: string | null;
   planned_departure: string | null;
   actual_departure: string | null;
   delay_departure_min: number | null;
