@@ -79,7 +79,8 @@ services:
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       # Po wykonaniu KROK 8 (certbot) odkomentuj poniższą linię:
-      # - /etc/letsencrypt:/etc/letsencrypt:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - /var/www/html:/var/www/html:ro
     depends_on:
       - fastapi
       - dashboard
