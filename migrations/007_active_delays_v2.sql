@@ -2,7 +2,9 @@
 -- Dodaje: numer pociągu, kategorię handlową (nazwę), stację pierwszą, ostatnią,
 -- ostatnio odwiedzoną oraz obsługę pociągów odwołanych (status X).
 
-CREATE OR REPLACE VIEW v_active_delays AS
+DROP VIEW IF EXISTS v_active_delays;
+
+CREATE VIEW v_active_delays AS
 WITH latest_snapshot AS (
     SELECT id, fetched_at
     FROM operations_snapshots
