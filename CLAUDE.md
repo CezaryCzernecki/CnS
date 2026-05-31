@@ -123,9 +123,13 @@ weather_observations  (id, station_id, observed_at, is_forecast,
                        UNIQUE (station_id, observed_at, is_forecast)
 ```
 
+```
+calendar_events   (id, event_date, zone CHAR(1), day_type, event_name)
+                   UNIQUE NULLS NOT DISTINCT (event_date, zone)
+```
+
 **Nowe tabele (planowane, jeszcze nie istnieją):**
 ```
-calendar_events        ← Faza 1.2
 mv_training_features   ← Faza 2.1 (widok zmaterializowany)
 collector_health       ← Faza 5.1
 ```
@@ -164,13 +168,15 @@ collector_health       ← Faza 5.1
 - FastAPI: `/delays/stations/top`, `/delays/active`, `/stats`
 - Testy: `test_parser.py` + `test_postgres.py` + `test_weather.py` (mocki psycopg3 + requests)
 - WeatherClient (Open-Meteo): pobieranie pogody co 1h dla 30 stacji PKP
+- CalendarService: klasyfikacja dni (HOLIDAY/WEEKEND/LONG_WEEKEND/WINTER_BREAK/SUMMER_BREAK)
+- Testy: `test_calendar.py` (64 testy – algorytm Wielkanocy, Majówka, ferie, strefy)
 
 ### Backlog — kolejność implementacji
 
 | Faza | Zadanie | Zależności | Status |
 |------|---------|------------|--------|
 | 1.1 | WeatherClient + `weather_observations` | — | ✅ |
-| 1.2 | CalendarService + `calendar_events` | — | ❌ |
+| 1.2 | CalendarService + `calendar_events` | — | ✅ |
 | 2.1 | Feature Store (`mv_training_features`) | 1.1 + 1.2 | ❌ |
 | 3.1 | BaselineModel + `/predict/baseline` | 2.1 | ❌ |
 | 3.2 | XGBoostDelayPredictor + `/predict` | 3.1 | ❌ |

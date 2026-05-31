@@ -12,6 +12,7 @@ import time
 from datetime import datetime, date
 from typing import Optional, Protocol, runtime_checkable
 
+from cns.collector.calendar_service import CalendarService
 from cns.collector.client import PKPClient, RateLimitError
 from cns.collector.parser import (
     parse_carriers, parse_operations, parse_stations,
@@ -83,6 +84,7 @@ class DataCollector:
     ):
         self.client = PKPClient(api_key)
         self.weather_client = WeatherClient()
+        self.calendar_service = CalendarService()
         self.storage = storage or JsonFileStorage()
         self.ops_interval = operations_interval_min * 60
         self.dis_interval = disruptions_interval_min * 60
@@ -94,6 +96,7 @@ class DataCollector:
         self._last_weather: Optional[float] = None
         self._last_schedules_date: Optional[date] = None
         self._last_operations_version: Optional[str] = None
+        self._last_calendar_year: Optional[int] = None
 
     def run(self) -> None:
         logger.info("🚆 TorAlert DataCollector start (dry_run=%s)", self.dry_run)
@@ -132,6 +135,22 @@ class DataCollector:
         self._fetch_weather()
         self._fetch_schedules_if_needed()
 
+    def _bootstrap_calendar(self) -> None:
+        if not hasattr(self.storage, "is_calendar_populated"):
+            return
+        try:
+            if not self.storage.is_calendar_populated():
+                today = date.today()
+                rows = self.calendar_service.generate_events(today.year, today.year + 5)
+                if not self.dry_run:
+                    self.storage.save_calendar_events(rows)
+                    logger.info("Kalendarz zainicjowany: %d wpisów na 5 lat", len(rows))
+                else:
+                    logger.info("[DRY RUN] Kalendarz: %d wpisów", len(rows))
+            self._last_calendar_year = date.today().year
+        except Exception as e:
+            logger.error("Błąd bootstrapu kalendarza: %s", e)
+
     def _bootstrap(self) -> None:
         """Przy starcie synchronizuj słowniki stacji i przewoźników."""
         logger.info("Synchronizuję słowniki...")
@@ -157,6 +176,7 @@ class DataCollector:
 
         except Exception as e:
             logger.error("Bootstrap nieudany: %s. Kontynuuję mimo to.", e)
+        self._bootstrap_calendar()
 
     def _tick(self) -> None:
         now = time.monotonic()
@@ -170,6 +190,14 @@ class DataCollector:
             self._fetch_weather()
             self._last_weather = now
         self._fetch_schedules_if_needed()
+        self._update_calendar_if_needed()
+
+    def _update_calendar_if_needed(self) -> None:
+        today = date.today()
+        if self._last_calendar_year == today.year:
+            return
+        if today.month == 1 and today.day == 1:
+            self._bootstrap_calendar()
 
     def _fetch_operations(self, force: bool = False) -> None:
         logger.debug("Sprawdzam wersję danych operacyjnych...")

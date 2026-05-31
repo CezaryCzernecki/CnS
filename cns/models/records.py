@@ -47,7 +47,19 @@ Dostępne w /schedules – do połączenia po scheduleId + orderId.
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from typing import Optional
+
+
+class DayType(str, Enum):
+    WORKING = "WORKING"
+    WEEKEND = "WEEKEND"
+    HOLIDAY = "HOLIDAY"
+    HOLIDAY_EVE = "HOLIDAY_EVE"
+    HOLIDAY_RETURN = "HOLIDAY_RETURN"
+    WINTER_BREAK = "WINTER_BREAK"
+    SUMMER_BREAK = "SUMMER_BREAK"
+    LONG_WEEKEND = "LONG_WEEKEND"
 
 
 @dataclass

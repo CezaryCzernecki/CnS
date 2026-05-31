@@ -303,6 +303,20 @@ v_active_delays        -- aktualnie opóźnione pociągi (status P)
 v_station_delay_stats  -- statystyki per stacja (ostatnie 7 dni, min. 10 danych)
 ```
 
+### Kalendarz (Faza 1.2)
+```sql
+calendar_events (
+    id          BIGSERIAL PK,
+    event_date  DATE NOT NULL,
+    zone        CHAR(1),          -- 'A' | 'B' | 'C' | NULL = cały kraj
+    day_type    VARCHAR(30),      -- wartości enum DayType (HOLIDAY, WINTER_BREAK, ...)
+    event_name  VARCHAR(100),     -- np. "Wielkanoc", "Ferie zimowe strefa B"
+    UNIQUE NULLS NOT DISTINCT (event_date, zone)   -- PostgreSQL 15+
+)
+
+Indeks: calendar_events_date_idx ON (event_date)
+```
+
 ### Dane pogodowe (Faza 1.1)
 ```sql
 weather_observations (
@@ -359,6 +373,49 @@ Indeksy:
 | train_operations | ~38 400 | ~150 MB |
 | operations_snapshots | 96 | ~1 MB |
 | disruptions | ~310 | ~5 MB |
+
+### `collector/calendar_service.py` — CalendarService
+
+Klasyfikator typów dni kalendarzowych dla feature engineering modelu ML.
+Nie wymaga połączenia z zewnętrznymi API ani bazą danych – czysta logika w Pythonie.
+
+**Hierarchia priorytetów `get_day_type()`:**
+```
+HOLIDAY > WINTER_BREAK > SUMMER_BREAK > WEEKEND >
+LONG_WEEKEND > HOLIDAY_EVE > HOLIDAY_RETURN > WORKING
+```
+
+**Święta ustawowe (12 dat/rok):**
+- Stałe: 1.01, 6.01, 1.05, 3.05, 15.08, 1.11, 11.11, 25.12, 26.12
+- Ruchome (algorytm Butchera/Meeusa): Wielkanoc, Poniedziałek Wielkanocny, Boże Ciało (+60 dni od Wielkanocy)
+- Weryfikacja: Wielkanoc 2025=20.04, 2026=05.04, 2027=28.03
+
+**Ferie zimowe – strefy MEN:**
+
+| Strefa | Województwa |
+|--------|-------------|
+| A | dolnośląskie, opolskie, zachodniopomorskie, wielkopolskie |
+| B | kujawsko-pomorskie, lubuskie, łódzkie, małopolskie, świętokrzyskie, pomorskie |
+| C | lubelskie, mazowieckie, podkarpackie, podlaskie, śląskie, warmińsko-mazurskie |
+
+Daty hardcoded dla lat 2024–2030 (`_WINTER_BREAKS` dict). Do aktualizacji po podaniu dat MEN na nowy rok.
+
+**LONG_WEEKEND (pomost):** dzień roboczy, gdy obie strony (poprzedni i następny dzień) to dni wolne (święto lub weekend). Przykład: 2 maja 2025 (piątek) między 1.05 (czwartek, święto) a 3.05 (sobota, też święto).
+
+**Metody publiczne:**
+```python
+cal = CalendarService()
+cal.get_day_type(date(2025, 5, 2), zone="B")      # LONG_WEEKEND
+cal.is_long_weekend(date(2025, 5, 2))              # True
+cal.days_to_next_holiday(date(2025, 1, 1))         # 5 (do Trzech Króli)
+cal.days_since_last_holiday(date(2025, 1, 6))      # 5 (od Nowego Roku)
+cal.get_season(date(2025, 7, 15))                  # "SUMMER"
+cal.generate_events(2025, 2030)                    # list[dict] → calendar_events
+```
+
+**Integracja z DataCollector:**
+- `_bootstrap_calendar()` – sprawdza `is_calendar_populated()`, jeśli puste generuje 5 lat naprzód
+- `_update_calendar_if_needed()` – wywoływane w każdym `_tick()`, uruchamia update 1 stycznia
 
 ### `collector/weather_client.py` — WeatherClient
 

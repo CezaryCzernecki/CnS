@@ -437,6 +437,43 @@ class PostgresStorage:
         logger.info("Zapisano %d obserwacji pogodowych", len(rows))
 
     # -------------------------------------------------------------------------
+    # Kalendarz
+    # -------------------------------------------------------------------------
+
+    def is_calendar_populated(self) -> bool:
+        try:
+            with _conn(self.database_url) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT COUNT(*) FROM calendar_events")
+                    return cur.fetchone()[0] > 0
+        except Exception:
+            return False
+
+    def save_calendar_events(self, rows: list[dict]) -> None:
+        if not rows:
+            return
+        sql = """
+            INSERT INTO calendar_events (event_date, zone, day_type, event_name)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (event_date, zone) DO UPDATE SET
+                day_type=EXCLUDED.day_type,
+                event_name=EXCLUDED.event_name
+        """
+        data = [
+            (
+                r["event_date"],
+                r.get("zone"),
+                r["day_type"].value if hasattr(r["day_type"], "value") else r["day_type"],
+                r.get("event_name"),
+            )
+            for r in rows
+        ]
+        with _conn(self.database_url) as conn:
+            with conn.cursor() as cur:
+                cur.executemany(sql, data)
+        logger.info("Zapisano %d wpisów kalendarza", len(data))
+
+    # -------------------------------------------------------------------------
     # Diagnostyka
     # -------------------------------------------------------------------------
 
