@@ -11,10 +11,13 @@ export interface ActiveDelay {
   train_status: string | null;
   snapshot_time: string | null;
   train_number: string | null;
-  train_name: string | null;
+  carrier_name: string | null;
   first_station: string | null;
+  first_station_departure: string | null;
   last_station: string | null;
+  last_station_arrival: string | null;
   last_visited_station: string | null;
+  last_visited_arrival: string | null;
   delay_departure_min: number | null;
   delay_arrival_min: number | null;
 }
@@ -111,7 +114,7 @@ async function apiFetch<T>(
 // Publiczne API
 // ---------------------------------------------------------------------------
 
-export const fetchActiveDelays = (limit = 50): Promise<ActiveDelay[]> =>
+export const fetchActiveDelays = (limit = 500): Promise<ActiveDelay[]> =>
   apiFetch("/delays/active", { limit });
 
 export const fetchTopStations = (limit = 20): Promise<StationStat[]> =>

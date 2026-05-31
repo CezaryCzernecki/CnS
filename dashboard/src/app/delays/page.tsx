@@ -27,6 +27,13 @@ const REFRESH_INTERVAL_S = 60;
 // Helpers
 // ---------------------------------------------------------------------------
 
+function fmtTime(ts: string | null): string | null {
+  if (!ts) return null;
+  // Obsługuje zarówno "HH:MM:SS", "YYYY-MM-DDTHH:MM:SS" jak i "YYYY-MM-DD HH:MM:SS+TZ"
+  const match = ts.match(/T?(\d{2}:\d{2})/);
+  return match ? match[1] : null;
+}
+
 function rowBgClass(row: ActiveDelay): string {
   if (row.train_status === "X") return "bg-zinc-100/80";
   const delay = row.delay_departure_min;
@@ -50,8 +57,8 @@ const columns: ColumnDef<ActiveDelay>[] = [
         <span className="font-semibold text-zinc-900 font-mono text-sm">
           {row.original.train_number ?? "—"}
         </span>
-        {row.original.train_name && (
-          <span className="text-xs text-zinc-400">{row.original.train_name}</span>
+        {row.original.carrier_name && (
+          <span className="text-xs text-zinc-400">{row.original.carrier_name}</span>
         )}
       </div>
     ),
@@ -59,26 +66,53 @@ const columns: ColumnDef<ActiveDelay>[] = [
   },
   {
     accessorKey: "first_station",
-    header: "Od",
-    cell: ({ getValue }) => (
-      <span className="text-zinc-700 text-sm">{getValue<string>() ?? "—"}</span>
-    ),
+    header: "Stacja początkowa",
+    cell: ({ row }) => {
+      const time = fmtTime(row.original.first_station_departure);
+      return (
+        <div className="flex flex-col gap-0.5">
+          <span className="text-zinc-700 text-sm">{row.original.first_station ?? "—"}</span>
+          {time && <span className="text-xs text-zinc-400">{time}</span>}
+        </div>
+      );
+    },
     enableColumnFilter: false,
   },
   {
     accessorKey: "last_station",
-    header: "Do",
-    cell: ({ getValue }) => (
-      <span className="font-medium text-zinc-800 text-sm">{getValue<string>() ?? "—"}</span>
-    ),
+    header: "Stacja końcowa",
+    cell: ({ row }) => {
+      const time = fmtTime(row.original.last_station_arrival);
+      return (
+        <div className="flex flex-col gap-0.5">
+          <span className="font-medium text-zinc-800 text-sm">{row.original.last_station ?? "—"}</span>
+          {time && <span className="text-xs text-zinc-400">{time}</span>}
+        </div>
+      );
+    },
     enableColumnFilter: false,
   },
   {
     accessorKey: "last_visited_station",
-    header: "Ostatnia stacja",
-    cell: ({ getValue }) => (
-      <span className="text-zinc-600 text-sm">{getValue<string>() ?? "—"}</span>
-    ),
+    header: "Aktualna stacja",
+    cell: ({ row }) => {
+      const current = row.original.last_visited_station;
+      const last = row.original.last_station;
+      if (current && last && current === last) {
+        return (
+          <span className="inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-xs font-semibold text-blue-700">
+            Skończył bieg
+          </span>
+        );
+      }
+      const time = fmtTime(row.original.last_visited_arrival);
+      return (
+        <div className="flex flex-col gap-0.5">
+          <span className="text-zinc-600 text-sm">{current ?? "—"}</span>
+          {time && <span className="text-xs text-zinc-400">{time}</span>}
+        </div>
+      );
+    },
     enableColumnFilter: false,
   },
   {
@@ -123,7 +157,7 @@ export default function DelaysPage() {
 
   const load = useCallback(async () => {
     try {
-      const data = await fetchActiveDelays(200);
+      const data = await fetchActiveDelays();
       setDelays(data);
       setLastRefresh(Date.now());
       setError(null);
