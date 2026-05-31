@@ -194,6 +194,7 @@ class ActiveDelay(BaseModel):
     schedule_id: int
     order_id: int
     operating_date: Optional[str] = None
+    train_number: Optional[str] = None
     planned_departure: Optional[str] = None
     actual_departure: Optional[str] = None
     delay_departure_min: Optional[int] = None
@@ -350,7 +351,7 @@ def active_delays(
                 cur.execute(
                     """
                     SELECT station_id, station_name, schedule_id, order_id,
-                           operating_date, planned_departure, actual_departure,
+                           operating_date, train_number, planned_departure, actual_departure,
                            delay_departure_min, delay_arrival_min, snapshot_time
                     FROM v_active_delays
                     LIMIT %s
@@ -366,10 +367,11 @@ def active_delays(
             station_id=r[0], station_name=r[1],
             schedule_id=r[2], order_id=r[3],
             operating_date=str(r[4]) if r[4] is not None else None,
-            planned_departure=str(r[5]) if r[5] is not None else None,
-            actual_departure=str(r[6]) if r[6] is not None else None,
-            delay_departure_min=r[7], delay_arrival_min=r[8],
-            snapshot_time=str(r[9]) if r[9] is not None else None,
+            train_number=r[5],
+            planned_departure=str(r[6]) if r[6] is not None else None,
+            actual_departure=str(r[7]) if r[7] is not None else None,
+            delay_departure_min=r[8], delay_arrival_min=r[9],
+            snapshot_time=str(r[10]) if r[10] is not None else None,
         )
         for r in rows
     ]
