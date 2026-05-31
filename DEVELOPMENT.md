@@ -197,6 +197,7 @@ poetry run cns api-serve [--host HOST] [--port PORT] [--reload]
 | GET | `/delays/stations/top` | `v_station_delay_stats` | Top N stacji z największymi opóźnieniami (7 dni, min. 10 pomiarów). Param: `?limit=10` |
 | GET | `/delays/active` | `v_active_delays` | Aktualnie opóźnione pociągi (status P). Param: `?limit=20` |
 | GET | `/stats` | zliczenia | Liczba rekordów w każdej tabeli |
+| GET | `/predict/baseline` | BaselineModel | Predykcja opóźnienia. Params: `station_id`, `planned_departure` (ISO 8601), `day_type?` |
 
 Swagger UI dostępny pod `/docs`, ReDoc pod `/redoc`.
 
@@ -378,6 +379,43 @@ Indeksy:
 | train_operations | ~38 400 | ~150 MB |
 | operations_snapshots | 96 | ~1 MB |
 | disruptions | ~310 | ~5 MB |
+
+### `ml/baseline_model.py` — BaselineModel (Faza 3.1)
+
+Predykcja opóźnienia jako historyczna mediana per `(station_id, hour_bucket, day_type)`.
+Służy jako benchmark (dolna granica MSE) dla modeli ML wyższego rzędu.
+
+**Hierarchia fallback (4 poziomy):**
+```
+L1  (station_id, hour_bucket, day_type)  fallback=False  – dokładne dopasowanie
+L2  (station_id, hour_bucket)            fallback=True   – bez day_type
+L3  (station_id,)                        fallback=True   – tylko stacja
+L4  global                               fallback=True   – absolutny fallback
+```
+`hour_bucket = hour // 2` → 12 bucketów dziennie (redukuje szum małych próbek).
+
+**Statystyki na każdym poziomie:**
+| Pole | Opis |
+|------|------|
+| `mean_delay` | Średnia opóźnienia [min] |
+| `median_delay` | Mediana – używana jako predykcja |
+| `p75_delay` | 75. percentyl (upper-middle estimate) |
+| `p90_delay` | 90. percentyl (worst case) |
+| `sample_count` | Liczba próbek w tym buckecie |
+| `fallback` | True gdy użyto L2/L3/L4 zamiast L1 |
+
+**Trenowanie i metryki referencyjne:**
+```bash
+poetry run python -m cns.ml.train_baseline
+```
+Dane: `mv_training_features` za 90 dni, split 72/18 (po dacie, nie losowo).
+Metryki: MAE, RMSE, Coverage% (% predykcji z L1).
+
+> **Benchmark (TBD):** Uruchom `train_baseline` po zebraniu ≥30 dni danych.
+> Oczekiwane wartości: MAE ~3–8 min, RMSE ~8–15 min, Coverage 40–70%.
+
+**Serializacja:** `joblib.dump/load` → `models/baseline_v{YYYYMMDD}.pkl`.
+Ładowanie przy starcie FastAPI przez `lifespan` event.
 
 ### `mv_training_features` — Feature Store (Faza 2.1)
 
