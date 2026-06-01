@@ -141,7 +141,9 @@ class PostgresStorage:
             INSERT INTO schedules
                 (schedule_id, order_id, carrier_code, national_number,
                  train_name, commercial_category, operating_date, fetched_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+            VALUES (%s, %s, %s, %s, %s,
+                    (SELECT symbol FROM commercial_categories WHERE symbol = %s),
+                    %s, NOW())
             ON CONFLICT (schedule_id, order_id, operating_date) DO UPDATE SET
                 carrier_code=EXCLUDED.carrier_code,
                 national_number=EXCLUDED.national_number,
