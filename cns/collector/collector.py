@@ -184,6 +184,7 @@ class DataCollector:
         except Exception as e:
             logger.error("Bootstrap nieudany: %s. Kontynuuję mimo to.", e)
         self._bootstrap_calendar()
+        self._fetch_schedules_if_needed()
 
     def _tick(self) -> None:
         now = time.monotonic()
@@ -334,8 +335,6 @@ class DataCollector:
     def _fetch_schedules_if_needed(self) -> None:
         today = date.today()
         if self._last_schedules_date == today:
-            return
-        if datetime.now().hour < 4:
             return
         logger.info("Pobieram rozkład planowy na %s...", today)
         try:
