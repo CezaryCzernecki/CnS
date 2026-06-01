@@ -137,8 +137,9 @@ class PKPClient:
         carriers_include: list[str] = None,
         carriers_exclude: list[str] = None,
         shortened: bool = False,
+        page_size: int = 10000,
     ) -> dict:
-        params = {}
+        params = {"pageSize": page_size}
         if date_from:
             params["dateFrom"] = date_from.isoformat()
         if date_to:
