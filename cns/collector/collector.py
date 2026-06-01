@@ -308,10 +308,16 @@ class DataCollector:
             all_obs: list[dict] = []
             for station_id, lat, lon in stations:
                 try:
-                    obs = self.weather_client.get_forecast_48h(
+                    # Bieżąca obserwacja (is_forecast=False) – do feature store (LATERAL JOIN)
+                    current = self.weather_client.get_current(
                         str(station_id), float(lat), float(lon)
                     )
-                    all_obs.extend(obs)
+                    all_obs.append(current)
+                    # 48h prognoza (is_forecast=True) – dla API predykcji przyszłych kursów
+                    forecast = self.weather_client.get_forecast_48h(
+                        str(station_id), float(lat), float(lon)
+                    )
+                    all_obs.extend(forecast)
                 except Exception as e:
                     logger.warning("Błąd pogody dla stacji %s: %s", station_id, e)
 

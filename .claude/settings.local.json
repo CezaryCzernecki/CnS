@@ -14,7 +14,9 @@
       "WebFetch(domain:cyrknaszynach.pl)",
       "Bash(python3 *)",
       "WebFetch(domain:pdp-api.plk-sa.pl)",
-      "Bash(curl -s \"https://pdp-api.plk-sa.pl/swagger/v1/swagger.json\")"
+      "Bash(curl -s \"https://pdp-api.plk-sa.pl/swagger/v1/swagger.json\")",
+      "Bash(/home/cezary/.local/bin/poetry run *)",
+      "Bash(/home/cezary/.cache/pypoetry/virtualenvs/cyrk-na-szynach-QECnBhDK-py3.12/bin/pytest *)"
     ]
   }
 }

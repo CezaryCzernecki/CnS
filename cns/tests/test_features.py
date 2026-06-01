@@ -28,21 +28,27 @@ def _get_weather_for_stop(
     planned_departure: datetime,
 ) -> dict | None:
     """
-    Emuluje LATERAL JOIN z weather_observations:
+    Emuluje LATERAL JOIN z weather_observations (po migracji 014):
       WHERE station_id = %s
         AND observed_at <= planned_departure
-        AND is_forecast = FALSE
-      ORDER BY observed_at DESC LIMIT 1
+      ORDER BY is_forecast ASC, observed_at DESC
+      LIMIT 1
+
+    Preferuje obserwacje (is_forecast=False) nad prognozami (is_forecast=True).
+    Jeśli są tylko prognozy – zwraca najnowszą prognozę.
     """
     matching = [
         obs for obs in observations
         if str(obs["station_id"]) == str(station_id)
-        and not obs.get("is_forecast", False)
         and obs["observed_at"] <= planned_departure
     ]
     if not matching:
         return None
-    return max(matching, key=lambda o: o["observed_at"])
+    # is_forecast ASC (False=0 < True=1), observed_at DESC (nowszy = lepszy)
+    return sorted(
+        matching,
+        key=lambda o: (int(o.get("is_forecast", True)), -o["observed_at"].timestamp()),
+    )[0]
 
 
 def _compute_lag(stops: list[dict]) -> list[dict]:
@@ -120,17 +126,16 @@ class TestLateralWeatherJoin:
 
     def test_zwraca_najnowsza_obserwacje_przed_odjazdem(self):
         observations = [
-            self._obs("33506", -2, temp=14.0),   # 2h przed
-            self._obs("33506", -1, temp=16.0),   # 1h przed ← powinien wygrać
-            self._obs("33506",  0, temp=18.0),   # dokładnie o czasie ← też pasuje, ale nowszy
+            self._obs("33506", -2, temp=14.0),
+            self._obs("33506", -1, temp=16.0),
+            self._obs("33506",  0, temp=18.0),   # dokładnie o czasie – jest <= więc pasuje
         ]
         result = _get_weather_for_stop(observations, "33506", self._BASE)
-        # observed_at == planned_departure (offset=0) jest <= więc pasuje i jest najnowszy
         assert result["temperature_c"] == 18.0
 
     def test_nie_zwraca_obserwacji_z_przyszlosci(self):
         observations = [
-            self._obs("33506", -1, temp=14.0),   # pasuje
+            self._obs("33506", -1, temp=14.0),
             self._obs("33506", +1, temp=99.0),   # przyszłość – nie może być wybrany
         ]
         result = _get_weather_for_stop(observations, "33506", self._BASE)
@@ -142,13 +147,23 @@ class TestLateralWeatherJoin:
         ]
         assert _get_weather_for_stop(observations, "33506", self._BASE) is None
 
-    def test_nie_zwraca_prognozy(self):
+    def test_preferuje_obserwacje_nad_prognoza_nawet_gdy_starsza(self):
+        # Obserwacja sprzed 2h vs prognoza sprzed 1h – winna wygrać obserwacja
         observations = [
-            self._obs("33506", -1, forecast=True, temp=10.0),   # prognoza – wykluczona
-            self._obs("33506", -2, forecast=False, temp=12.0),  # obserwacja – wybrana
+            self._obs("33506", -1, forecast=True,  temp=10.0),
+            self._obs("33506", -2, forecast=False, temp=12.0),
         ]
         result = _get_weather_for_stop(observations, "33506", self._BASE)
         assert result["temperature_c"] == 12.0
+
+    def test_fallback_na_prognize_gdy_brak_obserwacji(self):
+        # Tylko prognozy dostępne – używamy najnowszej
+        observations = [
+            self._obs("33506", -2, forecast=True, temp=9.0),
+            self._obs("33506", -1, forecast=True, temp=11.0),  # nowsza prognoza
+        ]
+        result = _get_weather_for_stop(observations, "33506", self._BASE)
+        assert result["temperature_c"] == 11.0
 
     def test_filtruje_po_station_id(self):
         observations = [

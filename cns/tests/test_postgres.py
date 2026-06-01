@@ -178,19 +178,20 @@ class TestSaveSnapshot:
     def test_batch_insert_trains_jedno_execute(self, storage):
         mock_conn, mock_cursor = _make_conn_mock()
         mock_cursor.fetchone.return_value = (1,)
-        mock_cursor.fetchall.return_value = [(10,), (11,)]
+        # fetchall: 1) train IDs z unnest, 2) valid station IDs (stacje 0,1 użyte w _make_stop)
+        mock_cursor.fetchall.side_effect = [[(10,), (11,)], [(0,), (1,)]]
 
         with patch("cns.storage.postgres._conn", return_value=mock_conn):
             storage.save_snapshot(_make_snapshot(n_trains=2))
 
-        # execute wywołane 2 razy: INSERT snapshot + INSERT trains (unnest)
-        assert mock_cursor.execute.call_count == 2
+        # execute wywołane 3 razy: INSERT snapshot + INSERT trains (unnest) + SELECT station_id
+        assert mock_cursor.execute.call_count == 3
 
     def test_jeden_executemany_dla_wszystkich_przystankow(self, storage):
         mock_conn, mock_cursor = _make_conn_mock()
         mock_cursor.fetchone.return_value = (1,)
-        # 2 pociągi × 2 przystanki = 4 rekordy
-        mock_cursor.fetchall.return_value = [(10,), (11,)]
+        # 2 pociągi × 2 przystanki = 4 rekordy; station_ids: 0,1 (z _make_stop(str(i)))
+        mock_cursor.fetchall.side_effect = [[(10,), (11,)], [(0,), (1,)]]
 
         with patch("cns.storage.postgres._conn", return_value=mock_conn):
             storage.save_snapshot(_make_snapshot(n_trains=2))
@@ -244,7 +245,8 @@ class TestSaveSnapshot:
     def test_stop_rows_zawieraja_delay_minutes(self, storage):
         mock_conn, mock_cursor = _make_conn_mock()
         mock_cursor.fetchone.return_value = (1,)
-        mock_cursor.fetchall.return_value = [(10,)]
+        # fetchall: 1) train IDs, 2) valid station IDs (33506 musi być w valid_ids)
+        mock_cursor.fetchall.side_effect = [[(10,)], [(33506,)]]
 
         train = _make_train("100", n_stops=0)
         stop = _make_stop("33506", delay_dep=7)
