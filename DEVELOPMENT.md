@@ -122,7 +122,7 @@ Orkiestrator harmonogramu.
 |----------|----------|---------------|
 | `/data-version` + `/operations` | co 15 min | ~96 |
 | `/disruptions` | co 60 min | ~24 |
-| `/schedules` | raz dziennie po 04:00 | ~1 |
+| `/schedules` | przy starcie + raz dziennie | ~2 |
 | bootstrap (stacje, przewoźnicy) | przy starcie | ~2 |
 | Open-Meteo (pogoda, 30 stacji) | co 60 min | ~30 (zewnętrzne API) |
 
@@ -357,13 +357,23 @@ Indeksy:
 2. **Stacje spoza słownika** — API zwraca stacje których nie ma w
    `/dictionaries/stations`. FK na `station_stops.station_id` jest `ON DELETE SET NULL`.
 
-3. **Kategorie handlowe spoza słownika** — np. `Os/OsP`, `S4/S40`.
-   FK na `schedules.commercial_category` jest `ON DELETE SET NULL`.
+3. **Kategorie handlowe spoza słownika** — API zwraca trasy z `commercialCategorySymbol`
+   nieobecnym w `dictionaries.commercialCategories` tej samej odpowiedzi. FK violation
+   powodowała pominięcie całej trasy (w tym `national_number`). Naprawione przez subquery
+   w INSERT: `(SELECT symbol FROM commercial_categories WHERE symbol = %s)` — zwraca NULL
+   gdy kategoria nie istnieje, zamiast blokować zapis.
 
-4. **Anomalie czasowe** — pociągi przesunięte o dobę w rozkładzie dają
+4. **`/schedules` wymaga jawnego `pageSize`** — bez `pageSize=10000` API zwraca domyślnie
+   ~6900 tras zamiast wszystkich ~7200, reszta pociągów traci numer i nazwę w widoku.
+
+5. **Rozkłady pobierane przy starcie collectora** — `_bootstrap()` wywołuje
+   `_fetch_schedules_if_needed()`. Usunięty guard `hour < 4` (powodował brak numerów
+   przez całą noc po restarcie do 04:00).
+
+6. **Anomalie czasowe** — pociągi przesunięte o dobę w rozkładzie dają
    różnicę actual-planned = 1440 min. Filtrowane przez `MAX_REALISTIC_DELAY = 200`.
 
-5. **10000 rekordów limit** — API zwraca max 10000 pociągów na stronę.
+7. **10000 rekordów limit** — API zwraca max 10000 pociągów na stronę.
    Nie wiadomo czy sieć PKP ma więcej — do zbadania z paginacją.
 
 6. **Dwa osobne limity godzinowe** — carriers używa innego licznika niż

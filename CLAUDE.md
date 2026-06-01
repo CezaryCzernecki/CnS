@@ -152,6 +152,16 @@ collector_health       ← Faza 5.1
    jeśli `unnest INSERT` rzuci wyjątek, cały snapshot jest wycofywany (rollback)
 9. **10000 rekordów limit** — API zwraca max 10k pociągów/stronę; paginacja niezbadana
 10. **`stations` w odpowiedzi** — to słownik `{id: nazwa}`, nie lista; na poziomie głównym JSON
+11. **`/schedules` wymaga jawnego `pageSize=10000`** — bez tego parametru API zwraca domyślnie
+    ograniczoną liczbę tras (~6900 z ~7200), reszta pociągów trafia do `/operations` bez
+    numeru i nazwy. Parametr dodany do `PKPClient.get_schedules()`.
+12. **`commercial_category` FK blokuje cały rekord rozkładu** — trasy z kategorią nieobecną
+    w `commercial_categories` rzucały FK violation i były w całości pomijane (tracąc
+    `national_number`). Naprawione subquery `(SELECT symbol FROM commercial_categories WHERE symbol = %s)`,
+    które zwraca NULL zamiast błędu.
+13. **Rozkłady pobierane przy każdym starcie collectora** — usunięty guard `hour < 4`
+    i dodane wywołanie w `_bootstrap()`. Bez tego: po restarcie collectora w nocy
+    pociągi nie miały numerów aż do 04:00.
 
 ---
 
@@ -161,7 +171,7 @@ collector_health       ← Faza 5.1
 - Kolekcjonowanie RT co 15 min (10k pociągów/snapshot)
 - Batch insert przez `unnest` (<10s dla 10k × 17 przystanków)
 - Słowniki stacji i przewoźników (upsert)
-- Rozkład planowy (raz dziennie po 04:00)
+- Rozkład planowy (przy starcie + raz dziennie, `pageSize=10000`)
 - Utrudnienia (co 60 min)
 - Obsługa rate-limit + czekanie na kolejną godzinę
 - Filtrowanie anomalii >200 min
