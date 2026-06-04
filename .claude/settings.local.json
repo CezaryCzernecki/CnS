@@ -23,7 +23,9 @@
       "Bash(git -C /home/cezary/cns/CnS status --short)",
       "Bash(git *)",
       "Bash(grep -E '\\\\.\\(py|ts|tsx|js|sql\\)$')",
-      "Bash(poetry show *)"
+      "Bash(poetry show *)",
+      "Bash(docker compose *)",
+      "Bash(grep -v \"^$\")"
     ]
   }
 }
