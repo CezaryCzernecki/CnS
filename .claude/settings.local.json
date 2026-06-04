@@ -22,7 +22,8 @@
       "Bash(git -C /home/cezary/cns/CnS diff --stat HEAD)",
       "Bash(git -C /home/cezary/cns/CnS status --short)",
       "Bash(git *)",
-      "Bash(grep -E '\\\\.\\(py|ts|tsx|js|sql\\)$')"
+      "Bash(grep -E '\\\\.\\(py|ts|tsx|js|sql\\)$')",
+      "Bash(poetry show *)"
     ]
   }
 }
