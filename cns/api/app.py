@@ -622,7 +622,7 @@ def rankings_all_time(
                     """
                     WITH top_stops AS (
                         -- Skan po indeksie idx_station_stops_delay zamiast full table scan.
-                        -- 50k rekordów z 65M+ to ~0,1% tabeli — kończy się w <1s.
+                        -- 50k rekordow z 65M+ to ulamek tabeli — konczy sie w <1s.
                         SELECT train_op_id, delay_departure_min
                         FROM station_stops
                         WHERE delay_departure_min > 0
