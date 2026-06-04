@@ -12,6 +12,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 
+from cns.collector.parser import detect_bus_replacement
 from cns.models.records import Carrier, OperationsSnapshot, Station
 
 logger = logging.getLogger(__name__)
@@ -336,10 +337,16 @@ class PostgresStorage:
 
         disruption_sql = """
             INSERT INTO disruptions
-                (disruption_id, message, collected_at, collected_date)
-            VALUES (%s, %s, NOW(), CURRENT_DATE)
+                (disruption_id, message, disruption_type_code,
+                 start_station_id, end_station_id, has_bus_replacement,
+                 collected_at, collected_date)
+            VALUES (%s, %s, %s, %s, %s, %s, NOW(), CURRENT_DATE)
             ON CONFLICT (disruption_id, collected_date) DO UPDATE SET
-                message=EXCLUDED.message
+                message=EXCLUDED.message,
+                disruption_type_code=EXCLUDED.disruption_type_code,
+                start_station_id=EXCLUDED.start_station_id,
+                end_station_id=EXCLUDED.end_station_id,
+                has_bus_replacement=EXCLUDED.has_bus_replacement
             RETURNING id
         """
         route_sql = """
@@ -357,9 +364,17 @@ class PostgresStorage:
                 for item in items:
                     try:
                         cur.execute("SAVEPOINT sp_dis")
+                        msg = item.get("message")
+                        type_code = item.get("disruptionTypeCode")
+                        start_sid = item.get("startStationId")
+                        end_sid = item.get("endStationId")
                         cur.execute(disruption_sql, (
                             int(item.get("disruptionId") or 0),
-                            item.get("message"),
+                            msg,
+                            type_code,
+                            int(start_sid) if start_sid is not None else None,
+                            int(end_sid) if end_sid is not None else None,
+                            detect_bus_replacement(msg, type_code),
                         ))
                         row = cur.fetchone()
                         if not row:

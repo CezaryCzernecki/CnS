@@ -22,6 +22,29 @@ from cns.models.records import (
 
 logger = logging.getLogger(__name__)
 
+# Słowa kluczowe wskazujące na autobusową komunikację zastępczą (KZ).
+# Pokrywają wszystkie formy fleksyjne polskiego przymiotnika "zastępczy".
+_BUS_KW: tuple[str, ...] = (
+    "komunikacja zastępcz",
+    "komunikację zastępcz",
+    "komunikacji zastępcz",
+    "zastępcza komunikacja",
+    "zastępczą komunikacj",
+    "autobus zastępczy",
+    "autobusy zastępcze",
+    "autobusami zastępczymi",
+)
+
+
+def detect_bus_replacement(message: Optional[str], type_code: Optional[str]) -> bool:
+    """Zwraca True jeśli utrudnienie wiąże się z autobusową komunikacją zastępczą."""
+    msg = (message or "").lower()
+    if any(kw in msg for kw in _BUS_KW):
+        return True
+    code = (type_code or "").lower()
+    return "kz" in code or "bus_rep" in code
+
+
 
 def _parse_dt(value: Optional[str]) -> Optional[datetime]:
     """Parsuj datetime z formatu API: '2026-05-27T15:00:00' (bez strefy czasowej)."""
@@ -179,12 +202,15 @@ def parse_disruptions(raw: dict, collected_at: datetime) -> list[Disruption]:
             for r in affected_routes
             if r.get("stationId")
         })
+        type_code = item.get("disruptionTypeCode")
+        message = item.get("message")
         disruptions.append(Disruption(
             disruption_id=str(item.get("disruptionId") or item.get("id") or ""),
-            message=item.get("message"),
-            disruption_type_code=item.get("disruptionTypeCode"),
+            message=message,
+            disruption_type_code=type_code,
             start_station_id=item.get("startStationId"),
             end_station_id=item.get("endStationId"),
+            has_bus_replacement=detect_bus_replacement(message, type_code),
             affected_stations=affected_stations,
             collected_at=collected_at,
         ))

@@ -25,7 +25,8 @@
       "Bash(grep -E '\\\\.\\(py|ts|tsx|js|sql\\)$')",
       "Bash(poetry show *)",
       "Bash(docker compose *)",
-      "Bash(grep -v \"^$\")"
+      "Bash(grep -v \"^$\")",
+      "Bash(./node_modules/.bin/next build *)"
     ]
   }
 }

@@ -106,7 +106,9 @@ station_stops     (id, train_op_id FK, station_id,
                    planned_arrival/departure, actual_arrival/departure,
                    delay_arrival_min, delay_departure_min)
                    ← GŁÓWNA TABELA: ~650k rekordów/dzień
-disruptions       (id, disruption_id, message, collected_at, collected_date DATE)
+disruptions       (id, disruption_id, message, disruption_type_code,
+                   start_station_id FK, end_station_id FK,
+                   has_bus_replacement BOOL, collected_at, collected_date DATE)
 schedules         (id, schedule_id, order_id, carrier_code, operating_date)
 schedule_stops    (id, schedule_id FK, station_id FK, arrival_time, departure_time)
 

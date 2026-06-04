@@ -216,11 +216,13 @@ class Disruption:
     """Utrudnienie kolejowe z /disruptions.
     Spec: DisruptionDto — brak title/dateFrom/dateTo/carriers w schemacie API.
     affected_stations to lista stationId z affectedRoutes[].stationId.
+    has_bus_replacement wykrywane z treści message i disruptionTypeCode.
     """
     disruption_id: Optional[str]
     message: Optional[str]
     disruption_type_code: Optional[str] = None
     start_station_id: Optional[int] = None
     end_station_id: Optional[int] = None
+    has_bus_replacement: bool = False
     affected_stations: list[str] = field(default_factory=list)
     collected_at: datetime = field(default_factory=datetime.utcnow)

@@ -7,6 +7,7 @@ import pytest
 from datetime import datetime
 
 from cns.collector.parser import (
+    detect_bus_replacement,
     parse_carriers, parse_disruptions, parse_operations, parse_stations,
 )
 from cns.models.records import StationStop, TrainOperation
@@ -469,6 +470,7 @@ class TestSlowniki:
         assert d[0].message == "Roboty torowe Warszawa–Łódź. Ograniczenie prędkości."
         assert d[0].disruption_type_code == "utr_32"
         assert d[0].start_station_id == 33506
+        assert d[0].has_bus_replacement is False
 
     def test_parse_disruptions_puste(self):
         assert parse_disruptions({}, datetime.utcnow()) == []
@@ -477,6 +479,48 @@ class TestSlowniki:
         raw = {"disruptions": [{"disruptionId": 2, "message": "Test"}]}
         d = parse_disruptions(raw, datetime.utcnow())
         assert d[0].affected_stations == []
+
+    def test_parse_disruptions_wykrywa_kz_z_message(self):
+        raw = {"disruptions": [{
+            "disruptionId": 3,
+            "message": "Wprowadzona komunikacja zastępcza na odcinku Gdańsk–Gdynia.",
+            "startStationId": 10001,
+            "endStationId": 10002,
+        }]}
+        d = parse_disruptions(raw, datetime.utcnow())
+        assert d[0].has_bus_replacement is True
+        assert d[0].start_station_id == 10001
+        assert d[0].end_station_id == 10002
+
+    def test_parse_disruptions_wykrywa_kz_z_type_code(self):
+        raw = {"disruptions": [{
+            "disruptionId": 4,
+            "disruptionTypeCode": "kz_autobus",
+            "message": "Roboty na torze.",
+        }]}
+        d = parse_disruptions(raw, datetime.utcnow())
+        assert d[0].has_bus_replacement is True
+
+
+class TestDetectBusReplacement:
+    def test_brak_kz(self):
+        assert detect_bus_replacement("Ograniczenie prędkości.", None) is False
+
+    def test_kz_w_message(self):
+        assert detect_bus_replacement(
+            "Autobusy zastępcze kursują co 20 minut.", None
+        ) is True
+
+    def test_kz_wielka_litera(self):
+        assert detect_bus_replacement(
+            "Komunikacja Zastępcza obsługuje odcinek.", None
+        ) is True
+
+    def test_kz_w_type_code(self):
+        assert detect_bus_replacement(None, "kz_segment") is True
+
+    def test_none_inputs(self):
+        assert detect_bus_replacement(None, None) is False
 
 
 class TestIsConfirmed:
