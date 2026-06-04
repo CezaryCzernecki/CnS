@@ -79,6 +79,8 @@ export interface AllTimeRankingEntry {
   max_delay_min: number | null;
   first_station: string | null;
   last_station: string | null;
+  has_bus_replacement: boolean;
+  bus_segment: string | null;
 }
 
 export interface DailyRankingEntry {

@@ -179,6 +179,7 @@ function AllTimeTab() {
     <RouteCell key="r" first={r.first_station} last={r.last_station} />,
     <span key="d" className="text-zinc-500 text-xs tabular-nums">{fmtDate(r.operating_date)}</span>,
     <DelayBadge key="b" delay={r.max_delay_min} />,
+    <BusReplacementCell key="kz" active={r.has_bus_replacement} segment={r.bus_segment} />,
   ]);
 
   return (
@@ -191,7 +192,7 @@ function AllTimeTab() {
       loading={loading}
     >
       <RankTable
-        headers={["Pociąg", "Przewoźnik", "Trasa", "Data kursu", "Maks. opóźnienie"]}
+        headers={["Pociąg", "Przewoźnik", "Trasa", "Data kursu", "Maks. opóźnienie", "Kom. zastępcza"]}
         rows={rows}
         loading={loading}
         error={error}
@@ -421,6 +422,26 @@ function RouteCell({
     <div className="flex flex-col gap-0.5 min-w-[140px]">
       <span className="text-zinc-700 text-xs">{first ?? "—"}</span>
       <span className="text-zinc-400 text-xs">↓ {last ?? "—"}</span>
+    </div>
+  );
+}
+
+function BusReplacementCell({
+  active,
+  segment,
+}: {
+  active: boolean;
+  segment: string | null;
+}) {
+  if (!active) return <span className="text-zinc-300 text-xs">—</span>;
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
+        🚌 KZ
+      </span>
+      {segment && (
+        <span className="text-xs text-zinc-500">{segment}</span>
+      )}
     </div>
   );
 }

@@ -254,6 +254,8 @@ class AllTimeRankingEntry(BaseModel):
     max_delay_min: Optional[int] = None
     first_station: Optional[str] = None
     last_station: Optional[str] = None
+    has_bus_replacement: bool = False
+    bus_segment: Optional[str] = None
 
 
 class DailyRankingEntry(BaseModel):
@@ -666,7 +668,10 @@ def rankings_all_time(
                         dr.operating_date,
                         dr.max_delay_min,
                         fst.station_name    AS first_station,
-                        lst.station_name    AS last_station
+                        lst.station_name    AS last_station,
+                        kz.has_kz,
+                        kz.kz_start,
+                        kz.kz_end
                     FROM deduped_runs dr
                     JOIN schedules sc ON sc.schedule_id    = dr.schedule_id
                                     AND sc.order_id        = dr.order_id
@@ -675,6 +680,22 @@ def rankings_all_time(
                     LEFT JOIN carriers c   ON c.code = sc.carrier_code
                     LEFT JOIN first_st fst ON fst.train_op_id = dr.train_op_id
                     LEFT JOIN last_st  lst ON lst.train_op_id = dr.train_op_id
+                    LEFT JOIN LATERAL (
+                        SELECT
+                            TRUE              AS has_kz,
+                            st_s.name         AS kz_start,
+                            st_e.name         AS kz_end
+                        FROM disruption_affected_routes dar
+                        JOIN disruptions d
+                            ON d.id = dar.disruption_id
+                           AND d.has_bus_replacement = TRUE
+                        LEFT JOIN stations st_s ON st_s.station_id = d.start_station_id
+                        LEFT JOIN stations st_e ON st_e.station_id = d.end_station_id
+                        WHERE dar.schedule_id    = dr.schedule_id
+                          AND dar.order_id       = dr.order_id
+                          AND dar.operating_date = dr.operating_date
+                        LIMIT 1
+                    ) kz ON TRUE
                     ORDER BY dr.max_delay_min DESC
                     LIMIT %s
                     """,
@@ -684,12 +705,18 @@ def rankings_all_time(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Błąd bazy danych: {e}")
 
+    def _bus_segment(start: Optional[str], end: Optional[str]) -> Optional[str]:
+        parts = [p for p in (start, end) if p]
+        return " → ".join(parts) if parts else None
+
     return [
         AllTimeRankingEntry(
             train_number=r[0], train_name=r[1], carrier_name=r[2],
             operating_date=str(r[3]) if r[3] is not None else None,
             max_delay_min=r[4],
             first_station=r[5], last_station=r[6],
+            has_bus_replacement=bool(r[7]),
+            bus_segment=_bus_segment(r[8], r[9]),
         )
         for r in rows
     ]
