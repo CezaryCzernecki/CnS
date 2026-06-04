@@ -162,6 +162,13 @@ collector_health       ← Faza 5.1
 13. **Rozkłady pobierane przy każdym starcie collectora** — usunięty guard `hour < 4`
     i dodane wywołanie w `_bootstrap()`. Bez tego: po restarcie collectora w nocy
     pociągi nie miały numerów aż do 04:00.
+14. **Pociągi nocne bez numeru/nazwy** — `operating_date` pociągu startującego przed północą
+    to data wczorajsza. Po restarcie collectora JOIN `sc.operating_date = to_.operating_date`
+    nie trafiał, bo `_fetch_schedules_if_needed` pobierał tylko `date_from=today`.
+    Naprawione: zakres `date_from=yesterday, date_to=today` (jeden request API).
+15. **Widok `v_active_delays` filtruje po dacie** (migracja 015) — tylko pociągi z
+    `operating_date >= CURRENT_DATE - 1`. Pociągi nocne (wczorajsza data) są zachowane
+    z adnotacją daty w dashboardzie; starsze artefakty są odfiltrowywane.
 
 ---
 
@@ -176,11 +183,12 @@ collector_health       ← Faza 5.1
 - Obsługa rate-limit + czekanie na kolejną godzinę
 - Filtrowanie anomalii >200 min
 - FastAPI: `/delays/stations/top`, `/delays/active`, `/stats`
-- Testy: `test_parser.py` + `test_postgres.py` + `test_weather.py` (mocki psycopg3 + requests)
 - WeatherClient (Open-Meteo): pobieranie pogody co 1h dla 30 stacji PKP
 - CalendarService: klasyfikacja dni (HOLIDAY/WEEKEND/LONG_WEEKEND/WINTER_BREAK/SUMMER_BREAK)
 - Feature Store `mv_training_features`: LATERAL weather + LAG + flagi binarne, REFRESH CONCURRENTLY
-- Testy: 166 łącznie (parser + postgres + weather + calendar + features)
+- Testy: 262 łącznie (parser + postgres + weather + calendar + features + collector)
+- Filtr widoku `v_active_delays` (migracja 015): tylko today/yesterday, adnotacja daty nocnych
+- Kolektor pobiera rozkłady yesterday–today: pociągi nocne mają numery po restarcie
 
 ### Backlog — kolejność implementacji
 

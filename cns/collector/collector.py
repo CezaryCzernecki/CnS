@@ -10,7 +10,7 @@ Zmiany względem v0.2:
 import logging
 import threading
 import time
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional, Protocol, runtime_checkable
 
 from cns.collector.calendar_service import CalendarService
@@ -336,9 +336,12 @@ class DataCollector:
         today = date.today()
         if self._last_schedules_date == today:
             return
-        logger.info("Pobieram rozkład planowy na %s...", today)
+        # Pobieramy zakres yesterday–today żeby pociągi nocne (operating_date=wczoraj)
+        # miały dopasowane rekordy w tabeli schedules po restarcie collectora.
+        yesterday = today - timedelta(days=1)
+        logger.info("Pobieram rozkład planowy %s–%s...", yesterday, today)
         try:
-            raw = self.client.get_schedules(date_from=today, date_to=today)
+            raw = self.client.get_schedules(date_from=yesterday, date_to=today)
             if not self.dry_run:
                 self.storage.save_schedules(raw)
             else:

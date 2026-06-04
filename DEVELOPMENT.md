@@ -370,6 +370,20 @@ Indeksy:
    `_fetch_schedules_if_needed()`. Usunięty guard `hour < 4` (powodował brak numerów
    przez całą noc po restarcie do 04:00).
 
+6. **Pociągi nocne bez numeru/nazwy** — `operating_date` w `train_operations` to data
+   startu biegu. Dla pociągów startujących przed północą `operating_date = wczoraj`.
+   Po restarcie collectora w ciągu dnia nie było rekordów w `schedules` dla wczorajszej
+   daty → JOIN na `sc.operating_date = to_.operating_date` zwracał NULL.
+   Naprawka: `_fetch_schedules_if_needed()` pobiera zakres `yesterday–today`
+   (`date_from=yesterday, date_to=today`) zamiast tylko bieżącego dnia.
+   Jeden request API, UPSERT obsługuje duplikaty.
+
+7. **Filtr widoku v_active_delays** — migracja 015 dodaje
+   `AND to_.operating_date >= CURRENT_DATE - INTERVAL '1 day'` eliminując pociągi
+   z dat sprzed wczoraj (artefakty). Adnotacja daty wyruszenia dla pociągów nocnych
+   (operating_date = wczoraj) wyświetlana jest w dashboardzie (`delays/page.tsx`)
+   jako żółty badge z datą w formacie DD.MM.
+
 6. **Anomalie czasowe** — pociągi przesunięte o dobę w rozkładzie dają
    różnicę actual-planned = 1440 min. Filtrowane przez `MAX_REALISTIC_DELAY = 200`.
 

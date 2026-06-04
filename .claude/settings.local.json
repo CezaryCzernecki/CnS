@@ -21,7 +21,8 @@
       "Bash(xargs -I{} sh -c 'echo \"=== {} ===\" && head -5 {}')",
       "Bash(git -C /home/cezary/cns/CnS diff --stat HEAD)",
       "Bash(git -C /home/cezary/cns/CnS status --short)",
-      "Bash(git *)"
+      "Bash(git *)",
+      "Bash(grep -E '\\\\.\\(py|ts|tsx|js|sql\\)$')"
     ]
   }
 }
