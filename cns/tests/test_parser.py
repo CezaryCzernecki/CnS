@@ -306,14 +306,25 @@ class TestFiltrAnomalie:
         )
         assert stop.delay_departure_minutes == 300
 
-    def test_anomalia_601_min_odfiltrowana(self):
-        # Dobowe przesunięcie rozkładowe (~1440 min) — filtrowane przez próg 600 min
+    def test_realne_opoznienie_1000_min_przechodzi(self):
+        # ~16h — ekstremalne ale realne opóźnienie w Polsce
         stop = StationStop(
             station_id="1", station_name="Test",
             planned_sequence=1, actual_sequence=1,
             planned_arrival=None, actual_arrival=None,
             planned_departure=datetime(2026, 5, 27, 10, 0),
-            actual_departure=datetime(2026, 5, 27, 20, 1),  # +601 min
+            actual_departure=datetime(2026, 5, 28, 2, 40),  # +1000 min
+        )
+        assert stop.delay_departure_minutes == 1000
+
+    def test_anomalia_1440_min_odfiltrowana_prog_1439(self):
+        # Dobowe przesunięcie rozkładowe = 1440 min — filtrowane
+        stop = StationStop(
+            station_id="1", station_name="Test",
+            planned_sequence=1, actual_sequence=1,
+            planned_arrival=None, actual_arrival=None,
+            planned_departure=datetime(2026, 5, 27, 10, 0),
+            actual_departure=datetime(2026, 5, 28, 10, 0),  # +1440 min
         )
         assert stop.delay_departure_minutes is None
 

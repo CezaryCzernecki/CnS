@@ -93,9 +93,9 @@ class StationStop:
 
     # Próg filtrowania anomalii danych.
     # Przesunięcia rozkładowe (pociąg przełożony o dobę = 1440 min)
-    # generują fałszywe wartości. Próg 600 min (10h) eliminuje dobowe artefakty
-    # i zachowuje realne ekstremalnie opóźnione pociągi (poważne incydenty 3-8h).
-    MAX_REALISTIC_DELAY = 600
+    # generują fałszywe wartości. Próg 1439 min to tuż przed dobowym artefaktem,
+    # co pozwala rejestrować nawet ekstremalne realne opóźnienia (~1000 min).
+    MAX_REALISTIC_DELAY = 1439
 
     # isConfirmed=True oznacza że pociąg faktycznie przejechał przez przystanek.
     # Dla przyszłych przystanków API zwraca isConfirmed=False.
