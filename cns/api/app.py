@@ -649,10 +649,11 @@ def rankings_all_time(
                         dr.operating_date,
                         dr.max_delay_min
                     FROM deduped_runs dr
-                    LEFT JOIN schedules sc ON sc.schedule_id    = dr.schedule_id
-                                         AND sc.order_id        = dr.order_id
-                                         AND sc.operating_date  = dr.operating_date
-                    LEFT JOIN carriers c   ON c.code = sc.carrier_code
+                    JOIN schedules sc ON sc.schedule_id    = dr.schedule_id
+                                    AND sc.order_id        = dr.order_id
+                                    AND sc.operating_date  = dr.operating_date
+                                    AND sc.national_number IS NOT NULL
+                    LEFT JOIN carriers c ON c.code = sc.carrier_code
                     ORDER BY dr.max_delay_min DESC
                     LIMIT %s
                     """,
@@ -705,9 +706,10 @@ def rankings_daily(
                         MAX(ss.delay_departure_min) AS max_delay_min
                     FROM station_stops ss
                     JOIN train_operations to_ ON ss.train_op_id = to_.id
-                    LEFT JOIN schedules sc ON sc.schedule_id    = to_.schedule_id
-                                         AND sc.order_id        = to_.order_id
-                                         AND sc.operating_date  = to_.operating_date
+                    JOIN schedules sc ON sc.schedule_id    = to_.schedule_id
+                                    AND sc.order_id        = to_.order_id
+                                    AND sc.operating_date  = to_.operating_date
+                                    AND sc.national_number IS NOT NULL
                     LEFT JOIN carriers c ON c.code = sc.carrier_code
                     WHERE ss.delay_departure_min IS NOT NULL
                       AND ss.delay_departure_min > 0
