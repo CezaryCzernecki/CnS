@@ -620,23 +620,40 @@ def rankings_all_time(
             with conn.cursor() as cur:
                 cur.execute(
                     """
+                    WITH top_stops AS (
+                        -- Skan po indeksie idx_station_stops_delay zamiast full table scan.
+                        -- 50k rekordów z 65M+ to ~0,1% tabeli — kończy się w <1s.
+                        SELECT train_op_id, delay_departure_min
+                        FROM station_stops
+                        WHERE delay_departure_min > 0
+                        ORDER BY delay_departure_min DESC
+                        LIMIT 50000
+                    ),
+                    deduped_runs AS (
+                        -- Deduplikacja: ten sam kurs może mieć wiele train_op_id
+                        -- (jeden na snapshot). Zachowujemy najwyższe opóźnienie per kurs.
+                        SELECT DISTINCT ON (to_.schedule_id, to_.order_id, to_.operating_date)
+                            to_.schedule_id,
+                            to_.order_id,
+                            to_.operating_date,
+                            ts.delay_departure_min AS max_delay_min
+                        FROM top_stops ts
+                        JOIN train_operations to_ ON ts.train_op_id = to_.id
+                        ORDER BY to_.schedule_id, to_.order_id, to_.operating_date,
+                                 ts.delay_departure_min DESC
+                    )
                     SELECT
-                        sc.national_number      AS train_number,
+                        sc.national_number  AS train_number,
                         sc.train_name,
-                        c.name                  AS carrier_name,
-                        to_.operating_date,
-                        MAX(ss.delay_departure_min) AS max_delay_min
-                    FROM station_stops ss
-                    JOIN train_operations to_ ON ss.train_op_id = to_.id
-                    LEFT JOIN schedules sc ON sc.schedule_id    = to_.schedule_id
-                                         AND sc.order_id        = to_.order_id
-                                         AND sc.operating_date  = to_.operating_date
-                    LEFT JOIN carriers c ON c.code = sc.carrier_code
-                    WHERE ss.delay_departure_min IS NOT NULL
-                      AND ss.delay_departure_min > 0
-                    GROUP BY to_.schedule_id, to_.order_id, to_.operating_date,
-                             sc.national_number, sc.train_name, c.name
-                    ORDER BY max_delay_min DESC
+                        c.name              AS carrier_name,
+                        dr.operating_date,
+                        dr.max_delay_min
+                    FROM deduped_runs dr
+                    LEFT JOIN schedules sc ON sc.schedule_id    = dr.schedule_id
+                                         AND sc.order_id        = dr.order_id
+                                         AND sc.operating_date  = dr.operating_date
+                    LEFT JOIN carriers c   ON c.code = sc.carrier_code
+                    ORDER BY dr.max_delay_min DESC
                     LIMIT %s
                     """,
                     (limit,),
