@@ -51,7 +51,7 @@ def client(monkeypatch):
 
 class TestAllTimeRanking:
     def test_returns_list(self, client):
-        rows = [("12345", "Ekspres Regionalny", "PKP Intercity S.A.", date(2026, 6, 1), 120)]
+        rows = [("12345", "Ekspres Regionalny", "PKP Intercity S.A.", date(2026, 6, 1), 120, "Warszawa Centralna", "Kraków Główny")]
         mock_connect, _ = _make_psycopg_mock(rows)
         with patch("psycopg.connect", mock_connect):
             resp = client.get("/rankings/all-time")
@@ -61,6 +61,8 @@ class TestAllTimeRanking:
         assert len(data) == 1
         assert data[0]["train_number"] == "12345"
         assert data[0]["max_delay_min"] == 120
+        assert data[0]["first_station"] == "Warszawa Centralna"
+        assert data[0]["last_station"] == "Kraków Główny"
 
     def test_limit_param_forwarded(self, client):
         mock_connect, mock_cursor = _make_psycopg_mock([])
@@ -79,7 +81,7 @@ class TestAllTimeRanking:
         assert resp.status_code == 422
 
     def test_null_train_number_allowed(self, client):
-        rows = [(None, None, "PKP Intercity S.A.", date(2026, 6, 1), 80)]
+        rows = [(None, None, "PKP Intercity S.A.", date(2026, 6, 1), 80, None, None)]
         mock_connect, _ = _make_psycopg_mock(rows)
         with patch("psycopg.connect", mock_connect):
             resp = client.get("/rankings/all-time")
@@ -100,7 +102,7 @@ class TestAllTimeRanking:
 
 class TestDailyRanking:
     def test_returns_list(self, client):
-        rows = [("54321", "Bielik", "PKP Intercity S.A.", 75)]
+        rows = [("54321", "Bielik", "PKP Intercity S.A.", 75, "Gdańsk Główny", "Warszawa Centralna")]
         mock_connect, _ = _make_psycopg_mock(rows)
         with patch("psycopg.connect", mock_connect):
             resp = client.get("/rankings/daily?date=2026-06-04")
@@ -108,6 +110,8 @@ class TestDailyRanking:
         data = resp.json()
         assert len(data) == 1
         assert data[0]["max_delay_min"] == 75
+        assert data[0]["first_station"] == "Gdańsk Główny"
+        assert data[0]["last_station"] == "Warszawa Centralna"
 
     def test_date_required(self, client):
         resp = client.get("/rankings/daily")

@@ -252,6 +252,8 @@ class AllTimeRankingEntry(BaseModel):
     carrier_name: Optional[str] = None
     operating_date: Optional[str] = None
     max_delay_min: Optional[int] = None
+    first_station: Optional[str] = None
+    last_station: Optional[str] = None
 
 
 class DailyRankingEntry(BaseModel):
@@ -259,6 +261,8 @@ class DailyRankingEntry(BaseModel):
     train_name: Optional[str] = None
     carrier_name: Optional[str] = None
     max_delay_min: Optional[int] = None
+    first_station: Optional[str] = None
+    last_station: Optional[str] = None
 
 
 class MonthlyTrainRankingEntry(BaseModel):
@@ -621,8 +625,6 @@ def rankings_all_time(
                 cur.execute(
                     """
                     WITH top_stops AS (
-                        -- Skan po indeksie idx_station_stops_delay zamiast full table scan.
-                        -- 50k rekordow z 65M+ to ulamek tabeli — konczy sie w <1s.
                         SELECT train_op_id, delay_departure_min
                         FROM station_stops
                         WHERE delay_departure_min > 0
@@ -630,9 +632,8 @@ def rankings_all_time(
                         LIMIT 50000
                     ),
                     deduped_runs AS (
-                        -- Deduplikacja: ten sam kurs może mieć wiele train_op_id
-                        -- (jeden na snapshot). Zachowujemy najwyższe opóźnienie per kurs.
                         SELECT DISTINCT ON (to_.schedule_id, to_.order_id, to_.operating_date)
+                            to_.id              AS train_op_id,
                             to_.schedule_id,
                             to_.order_id,
                             to_.operating_date,
@@ -641,19 +642,39 @@ def rankings_all_time(
                         JOIN train_operations to_ ON ts.train_op_id = to_.id
                         ORDER BY to_.schedule_id, to_.order_id, to_.operating_date,
                                  ts.delay_departure_min DESC
+                    ),
+                    first_st AS (
+                        SELECT DISTINCT ON (ss.train_op_id)
+                            ss.train_op_id, st.name AS station_name
+                        FROM station_stops ss
+                        LEFT JOIN stations st ON st.station_id = ss.station_id
+                        WHERE ss.train_op_id IN (SELECT train_op_id FROM deduped_runs)
+                        ORDER BY ss.train_op_id, ss.planned_sequence ASC
+                    ),
+                    last_st AS (
+                        SELECT DISTINCT ON (ss.train_op_id)
+                            ss.train_op_id, st.name AS station_name
+                        FROM station_stops ss
+                        LEFT JOIN stations st ON st.station_id = ss.station_id
+                        WHERE ss.train_op_id IN (SELECT train_op_id FROM deduped_runs)
+                        ORDER BY ss.train_op_id, ss.planned_sequence DESC
                     )
                     SELECT
                         sc.national_number  AS train_number,
                         sc.train_name,
                         c.name              AS carrier_name,
                         dr.operating_date,
-                        dr.max_delay_min
+                        dr.max_delay_min,
+                        fst.station_name    AS first_station,
+                        lst.station_name    AS last_station
                     FROM deduped_runs dr
                     JOIN schedules sc ON sc.schedule_id    = dr.schedule_id
                                     AND sc.order_id        = dr.order_id
                                     AND sc.operating_date  = dr.operating_date
                                     AND sc.national_number IS NOT NULL
-                    LEFT JOIN carriers c ON c.code = sc.carrier_code
+                    LEFT JOIN carriers c   ON c.code = sc.carrier_code
+                    LEFT JOIN first_st fst ON fst.train_op_id = dr.train_op_id
+                    LEFT JOIN last_st  lst ON lst.train_op_id = dr.train_op_id
                     ORDER BY dr.max_delay_min DESC
                     LIMIT %s
                     """,
@@ -668,6 +689,7 @@ def rankings_all_time(
             train_number=r[0], train_name=r[1], carrier_name=r[2],
             operating_date=str(r[3]) if r[3] is not None else None,
             max_delay_min=r[4],
+            first_station=r[5], last_station=r[6],
         )
         for r in rows
     ]
@@ -699,24 +721,50 @@ def rankings_daily(
             with conn.cursor() as cur:
                 cur.execute(
                     """
+                    WITH train_runs AS (
+                        SELECT
+                            to_.schedule_id, to_.order_id,
+                            sc.national_number, sc.train_name,
+                            c.name              AS carrier_name,
+                            MAX(ss.delay_departure_min) AS max_delay_min,
+                            MIN(ss.train_op_id) AS sample_op_id
+                        FROM station_stops ss
+                        JOIN train_operations to_ ON ss.train_op_id = to_.id
+                        JOIN schedules sc ON sc.schedule_id    = to_.schedule_id
+                                        AND sc.order_id        = to_.order_id
+                                        AND sc.operating_date  = to_.operating_date
+                                        AND sc.national_number IS NOT NULL
+                        LEFT JOIN carriers c ON c.code = sc.carrier_code
+                        WHERE ss.delay_departure_min > 0
+                          AND to_.operating_date = %s
+                        GROUP BY to_.schedule_id, to_.order_id,
+                                 sc.national_number, sc.train_name, c.name
+                    ),
+                    first_st AS (
+                        SELECT DISTINCT ON (ss.train_op_id)
+                            ss.train_op_id, st.name AS station_name
+                        FROM station_stops ss
+                        LEFT JOIN stations st ON st.station_id = ss.station_id
+                        WHERE ss.train_op_id IN (SELECT sample_op_id FROM train_runs)
+                        ORDER BY ss.train_op_id, ss.planned_sequence ASC
+                    ),
+                    last_st AS (
+                        SELECT DISTINCT ON (ss.train_op_id)
+                            ss.train_op_id, st.name AS station_name
+                        FROM station_stops ss
+                        LEFT JOIN stations st ON st.station_id = ss.station_id
+                        WHERE ss.train_op_id IN (SELECT sample_op_id FROM train_runs)
+                        ORDER BY ss.train_op_id, ss.planned_sequence DESC
+                    )
                     SELECT
-                        sc.national_number      AS train_number,
-                        sc.train_name,
-                        c.name                  AS carrier_name,
-                        MAX(ss.delay_departure_min) AS max_delay_min
-                    FROM station_stops ss
-                    JOIN train_operations to_ ON ss.train_op_id = to_.id
-                    JOIN schedules sc ON sc.schedule_id    = to_.schedule_id
-                                    AND sc.order_id        = to_.order_id
-                                    AND sc.operating_date  = to_.operating_date
-                                    AND sc.national_number IS NOT NULL
-                    LEFT JOIN carriers c ON c.code = sc.carrier_code
-                    WHERE ss.delay_departure_min IS NOT NULL
-                      AND ss.delay_departure_min > 0
-                      AND to_.operating_date = %s
-                    GROUP BY to_.schedule_id, to_.order_id,
-                             sc.national_number, sc.train_name, c.name
-                    ORDER BY max_delay_min DESC
+                        tr.national_number, tr.train_name, tr.carrier_name,
+                        tr.max_delay_min,
+                        fst.station_name AS first_station,
+                        lst.station_name AS last_station
+                    FROM train_runs tr
+                    LEFT JOIN first_st fst ON fst.train_op_id = tr.sample_op_id
+                    LEFT JOIN last_st  lst ON lst.train_op_id = tr.sample_op_id
+                    ORDER BY tr.max_delay_min DESC
                     LIMIT %s
                     """,
                     (query_date, limit),
@@ -728,7 +776,7 @@ def rankings_daily(
     return [
         DailyRankingEntry(
             train_number=r[0], train_name=r[1], carrier_name=r[2],
-            max_delay_min=r[3],
+            max_delay_min=r[3], first_station=r[4], last_station=r[5],
         )
         for r in rows
     ]

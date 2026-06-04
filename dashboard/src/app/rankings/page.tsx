@@ -176,6 +176,7 @@ function AllTimeTab() {
   const rows = data.map((r) => [
     <TrainCell key="t" number={r.train_number} name={r.train_name} carrier={r.carrier_name} />,
     <span key="c" className="text-zinc-600 text-sm">{cleanCarrier(r.carrier_name)}</span>,
+    <RouteCell key="r" first={r.first_station} last={r.last_station} />,
     <span key="d" className="text-zinc-500 text-xs tabular-nums">{fmtDate(r.operating_date)}</span>,
     <DelayBadge key="b" delay={r.max_delay_min} />,
   ]);
@@ -190,7 +191,7 @@ function AllTimeTab() {
       loading={loading}
     >
       <RankTable
-        headers={["Pociąg", "Przewoźnik", "Data kursu", "Maks. opóźnienie"]}
+        headers={["Pociąg", "Przewoźnik", "Trasa", "Data kursu", "Maks. opóźnienie"]}
         rows={rows}
         loading={loading}
         error={error}
@@ -231,6 +232,7 @@ function DailyTab() {
   const rows = data.map((r) => [
     <TrainCell key="t" number={r.train_number} name={r.train_name} carrier={r.carrier_name} />,
     <span key="c" className="text-zinc-600 text-sm">{cleanCarrier(r.carrier_name)}</span>,
+    <RouteCell key="r" first={r.first_station} last={r.last_station} />,
     <DelayBadge key="b" delay={r.max_delay_min} />,
   ]);
 
@@ -253,7 +255,7 @@ function DailyTab() {
       }
     >
       <RankTable
-        headers={["Pociąg", "Przewoźnik", "Maks. opóźnienie"]}
+        headers={["Pociąg", "Przewoźnik", "Trasa", "Maks. opóźnienie"]}
         rows={rows}
         loading={loading}
         error={error}
@@ -403,6 +405,22 @@ function TrainCell({
         {number ?? "—"}
       </span>
       {secondary && <span className="text-xs text-zinc-400">{secondary}</span>}
+    </div>
+  );
+}
+
+function RouteCell({
+  first,
+  last,
+}: {
+  first: string | null;
+  last: string | null;
+}) {
+  if (!first && !last) return <span className="text-zinc-400 text-xs">—</span>;
+  return (
+    <div className="flex flex-col gap-0.5 min-w-[140px]">
+      <span className="text-zinc-700 text-xs">{first ?? "—"}</span>
+      <span className="text-zinc-400 text-xs">↓ {last ?? "—"}</span>
     </div>
   );
 }

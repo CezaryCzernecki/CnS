@@ -77,6 +77,8 @@ export interface AllTimeRankingEntry {
   carrier_name: string | null;
   operating_date: string | null;
   max_delay_min: number | null;
+  first_station: string | null;
+  last_station: string | null;
 }
 
 export interface DailyRankingEntry {
@@ -84,6 +86,8 @@ export interface DailyRankingEntry {
   train_name: string | null;
   carrier_name: string | null;
   max_delay_min: number | null;
+  first_station: string | null;
+  last_station: string | null;
 }
 
 export interface MonthlyTrainRankingEntry {
