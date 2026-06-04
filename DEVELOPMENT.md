@@ -885,6 +885,50 @@ client.get_forecast_48h("33506", lat=52.22, lon=21.00)
 - `forecast_days=2` gwarantuje dokładnie 48 rekordów godzinowych (2×24)
 - Stacje bez `latitude/longitude` w tabeli `stations` są pomijane
 
+## Rankingi opóźnień (`cns/api/app.py` + `dashboard/src/app/rankings/`)
+
+Cztery nowe endpointy FastAPI i odpowiadająca im strona dashboardu z zakładkami.
+
+### Endpointy
+
+| Endpoint | Parametry | Opis |
+|----------|-----------|------|
+| `GET /rankings/all-time` | `limit=10` (1–100) | Rekordy opóźnień od początku notowań |
+| `GET /rankings/daily` | `date=YYYY-MM-DD`, `limit=10` | Top opóźnienia w wybranym dniu |
+| `GET /rankings/monthly/trains` | `year`, `month`, `limit=10` | Sumaryczne opóźnienia per numer pociągu |
+| `GET /rankings/monthly/carriers` | `year`, `month` | Sumaryczne opóźnienia per przewoźnik (wszyscy) |
+
+### Logika SQL
+
+Wszystkie rankingi agregują `MAX(delay_departure_min)` per kurs (schedule_id + order_id + operating_date),
+a nie per snapshot — ten sam kurs pociągu w wielu snapshotach liczy się raz.
+
+Dla rankingów miesięcznych: `SUM` wartości max per kurs = łączne minuty opóźnień w miesiącu.
+
+### Dashboard — strona `/rankings`
+
+Jeden plik `dashboard/src/app/rankings/page.tsx` z 4 zakładkami:
+1. **Wszech czasów** — limit 10/25/50/100
+2. **Dzienny** — date picker + limit 10/25/50/100
+3. **Miesięczny – pociągi** — month picker + limit 10/25/50/100
+4. **Miesięczny – spółki** — month picker (lista wszystkich przewoźników, bez limitu)
+
+### Migracja 016 (`migrations/016_active_delays_today_only.sql`)
+
+Self-contained — można zastosować na dowolnej bazie bez historii 011–015:
+- `ADD COLUMN IF NOT EXISTS is_confirmed, is_cancelled` (z migr. 011)
+- `ADD COLUMN IF NOT EXISTS train_name` (z migr. 011)
+- Przebudowuje `v_active_delays` z filtrem `operating_date >= CURRENT_DATE`
+
+### Gotcha
+
+- Rankingi skanują całą tabelę `station_stops` — przy >100M rekordach mogą być wolne.
+  W razie potrzeby dodać `CREATE INDEX idx_ss_delay_date ON station_stops (delay_departure_min DESC, train_op_id)`.
+- `limit=100` to maksimum dla endpointów all-time i daily (FastAPI Query validation).
+- Endpoint `/rankings/monthly/carriers` nie ma parametru `limit` — zawsze zwraca wszystkich przewoźników.
+
+---
+
 ## Jak zacząć nowy czat z Claude
 
 1. Wklej zawartość `CONTEXT.md` na początku rozmowy

@@ -72,8 +72,16 @@ poetry run pytest cns/tests/test_postgres.py -v  # tylko postgres
 |----------|------|
 | `GET /` | Health check |
 | `GET /delays/stations/top?limit=10` | Top N stacji z największymi opóźnieniami (7 dni) |
-| `GET /delays/active?limit=20` | Aktualnie opóźnione pociągi (status P) |
+| `GET /delays/active?limit=20` | Aktualnie opóźnione pociągi (status P, tylko dzisiaj) |
+| `GET /delays/stations/map?limit=60` | Stacje z koordynatami do mapy |
 | `GET /stats` | Statystyki bazy danych |
+| `GET /health/collector` | Stan kolektora danych |
+| `GET /rankings/all-time?limit=10` | Rekordy opóźnień od początku notowań |
+| `GET /rankings/daily?date=YYYY-MM-DD&limit=10` | Top opóźnienia w wybranym dniu |
+| `GET /rankings/monthly/trains?year=2026&month=6&limit=10` | Sumaryczne opóźnienia per numer pociągu |
+| `GET /rankings/monthly/carriers?year=2026&month=6` | Sumaryczne opóźnienia per przewoźnik |
+| `GET /predict?station_id=...&planned_departure=...` | Predykcja XGBoost |
+| `GET /predict/baseline?...` | Predykcja model baseline |
 
 Interaktywna dokumentacja (Swagger): `http://127.0.0.1:8000/docs`
 

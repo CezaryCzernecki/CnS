@@ -71,6 +71,37 @@ export interface DbStats {
   last_snapshot: string | null;
 }
 
+export interface AllTimeRankingEntry {
+  train_number: string | null;
+  train_name: string | null;
+  carrier_name: string | null;
+  operating_date: string | null;
+  max_delay_min: number | null;
+}
+
+export interface DailyRankingEntry {
+  train_number: string | null;
+  train_name: string | null;
+  carrier_name: string | null;
+  max_delay_min: number | null;
+}
+
+export interface MonthlyTrainRankingEntry {
+  train_number: string | null;
+  train_name: string | null;
+  carrier_name: string | null;
+  trip_count: number;
+  total_delay_min: number | null;
+  avg_delay_min: number | null;
+}
+
+export interface MonthlyCarrierRankingEntry {
+  carrier_name: string | null;
+  trip_count: number;
+  total_delay_min: number | null;
+  avg_delay_min: number | null;
+}
+
 // ---------------------------------------------------------------------------
 // Fetch helper
 // ---------------------------------------------------------------------------
@@ -145,3 +176,22 @@ export const fetchBaselinePrediction = (
     station_id: stationId,
     planned_departure: departure,
   });
+
+export const fetchRankingsAllTime = (limit = 10): Promise<AllTimeRankingEntry[]> =>
+  apiFetch("/rankings/all-time", { limit });
+
+export const fetchRankingsDaily = (date: string, limit = 10): Promise<DailyRankingEntry[]> =>
+  apiFetch("/rankings/daily", { date, limit });
+
+export const fetchRankingsMonthlyTrains = (
+  year: number,
+  month: number,
+  limit = 10
+): Promise<MonthlyTrainRankingEntry[]> =>
+  apiFetch("/rankings/monthly/trains", { year, month, limit });
+
+export const fetchRankingsMonthlyCarriers = (
+  year: number,
+  month: number
+): Promise<MonthlyCarrierRankingEntry[]> =>
+  apiFetch("/rankings/monthly/carriers", { year, month });

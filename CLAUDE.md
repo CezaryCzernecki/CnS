@@ -25,7 +25,7 @@ cyrk_na_szynach/
 │   └── 001_initial_schema.sql   ← tabele, indeksy, widoki
 └── cns/
     ├── __main__.py              ← CLI entry point
-    ├── api/app.py               ← FastAPI: /delays/stations/top, /delays/active, /stats
+    ├── api/app.py               ← FastAPI: /delays/*, /rankings/*, /stats, /predict
     ├── collector/
     │   ├── client.py            ← PKPClient: HTTP, retry 3x, rate-limit headers
     │   ├── parser.py            ← JSON → dataclasses (defensywny, .get() wszędzie)
@@ -166,9 +166,10 @@ collector_health       ← Faza 5.1
     to data wczorajsza. Po restarcie collectora JOIN `sc.operating_date = to_.operating_date`
     nie trafiał, bo `_fetch_schedules_if_needed` pobierał tylko `date_from=today`.
     Naprawione: zakres `date_from=yesterday, date_to=today` (jeden request API).
-15. **Widok `v_active_delays` filtruje po dacie** (migracja 015) — tylko pociągi z
-    `operating_date >= CURRENT_DATE - 1`. Pociągi nocne (wczorajsza data) są zachowane
-    z adnotacją daty w dashboardzie; starsze artefakty są odfiltrowywane.
+15. **Widok `v_active_delays` filtruje po dacie** (migracja 015→016) — tylko pociągi z
+    `operating_date >= CURRENT_DATE` (wyłącznie dzisiaj). Wczorajsze wpisy (artefakty
+    starych snapshotów) są odfiltrowywane. Migracja 016 jest self-contained — dodaje
+    brakujące kolumny IF NOT EXISTS (train_name, is_confirmed, is_cancelled).
 
 ---
 
@@ -182,13 +183,14 @@ collector_health       ← Faza 5.1
 - Utrudnienia (co 60 min)
 - Obsługa rate-limit + czekanie na kolejną godzinę
 - Filtrowanie anomalii >200 min
-- FastAPI: `/delays/stations/top`, `/delays/active`, `/stats`
+- FastAPI: `/delays/stations/top`, `/delays/active`, `/stats`, `/rankings/*`
 - WeatherClient (Open-Meteo): pobieranie pogody co 1h dla 30 stacji PKP
 - CalendarService: klasyfikacja dni (HOLIDAY/WEEKEND/LONG_WEEKEND/WINTER_BREAK/SUMMER_BREAK)
 - Feature Store `mv_training_features`: LATERAL weather + LAG + flagi binarne, REFRESH CONCURRENTLY
-- Testy: 262 łącznie (parser + postgres + weather + calendar + features + collector)
-- Filtr widoku `v_active_delays` (migracja 015): tylko today/yesterday, adnotacja daty nocnych
+- Testy: 282 łącznie (parser + postgres + weather + calendar + features + collector + api_rankings)
+- Filtr widoku `v_active_delays` (migracja 016): tylko CURRENT_DATE, wczorajsze artefakty odfiltrowane
 - Kolektor pobiera rozkłady yesterday–today: pociągi nocne mają numery po restarcie
+- Rankingi: 4 zakładki w dashboardzie (wszech czasów / dzienny / miesięczny pociągi / miesięczny spółki)
 
 ### Backlog — kolejność implementacji
 

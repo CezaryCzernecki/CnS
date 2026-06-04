@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Train, Map, Sparkles } from "lucide-react";
+import { Train, Map, Sparkles, Trophy } from "lucide-react";
 
 const links = [
   { href: "/delays", label: "Opóźnienia", icon: Train },
   { href: "/map", label: "Mapa", icon: Map },
+  { href: "/rankings", label: "Rankingi", icon: Trophy },
   { href: "/predict", label: "Predykcja", icon: Sparkles },
 ];
 

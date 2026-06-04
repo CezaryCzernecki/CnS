@@ -34,22 +34,6 @@ function fmtTime(ts: string | null): string | null {
   return match ? match[1] : null;
 }
 
-function isYesterday(dateStr: string | null): boolean {
-  if (!dateStr) return false;
-  const match = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (!match) return false;
-  const d = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
-  const today = new Date();
-  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
-  return d.getTime() === yesterday.getTime();
-}
-
-function fmtDateShort(dateStr: string | null): string | null {
-  if (!dateStr) return null;
-  const match = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  return match ? `${match[3]}.${match[2]}` : null;
-}
-
 // Usuwa formy prawne z nazwy przewoźnika: "S.A.", "Sp. z o.o.", "sp. z o.o." itp.
 function cleanCarrier(name: string | null): string {
   if (!name) return "";
@@ -101,19 +85,10 @@ const columns: ColumnDef<ActiveDelay>[] = [
     header: "Stacja początkowa",
     cell: ({ row }) => {
       const time = fmtTime(row.original.first_station_departure);
-      const prevDay = isYesterday(row.original.operating_date);
-      const dateLabel = prevDay ? fmtDateShort(row.original.operating_date) : null;
       return (
         <div className="flex flex-col gap-0.5">
           <span className="text-zinc-700 text-sm">{row.original.first_station ?? "—"}</span>
-          <div className="flex items-center gap-1">
-            {dateLabel && (
-              <span className="inline-flex items-center rounded-sm bg-amber-100 px-1 text-xs font-medium text-amber-700">
-                {dateLabel}
-              </span>
-            )}
-            {time && <span className="text-xs text-zinc-400">{time}</span>}
-          </div>
+          {time && <span className="text-xs text-zinc-400">{time}</span>}
         </div>
       );
     },

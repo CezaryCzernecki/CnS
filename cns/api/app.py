@@ -246,6 +246,37 @@ class BaselinePredictionResponse(BaseModel):
     fallback: bool
 
 
+class AllTimeRankingEntry(BaseModel):
+    train_number: Optional[str] = None
+    train_name: Optional[str] = None
+    carrier_name: Optional[str] = None
+    operating_date: Optional[str] = None
+    max_delay_min: Optional[int] = None
+
+
+class DailyRankingEntry(BaseModel):
+    train_number: Optional[str] = None
+    train_name: Optional[str] = None
+    carrier_name: Optional[str] = None
+    max_delay_min: Optional[int] = None
+
+
+class MonthlyTrainRankingEntry(BaseModel):
+    train_number: Optional[str] = None
+    train_name: Optional[str] = None
+    carrier_name: Optional[str] = None
+    trip_count: int = 0
+    total_delay_min: Optional[int] = None
+    avg_delay_min: Optional[float] = None
+
+
+class MonthlyCarrierRankingEntry(BaseModel):
+    carrier_name: Optional[str] = None
+    trip_count: int = 0
+    total_delay_min: Optional[int] = None
+    avg_delay_min: Optional[float] = None
+
+
 # ---------------------------------------------------------------------------
 # Endpointy
 # ---------------------------------------------------------------------------
@@ -571,3 +602,243 @@ def predict_baseline(
         model_date=getattr(model, "trained_date", None),
         fallback=pred.fallback,
     )
+
+
+@app.get("/rankings/all-time", response_model=list[AllTimeRankingEntry])
+def rankings_all_time(
+    limit: int = Query(default=10, ge=1, le=100, description="Top N wyników"),
+    db_url: str = Depends(_db_url),
+):
+    """Ranking pociągów z najwyższymi opóźnieniami od początku notowań."""
+    try:
+        import psycopg
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Zainstaluj: poetry install -E api")
+
+    try:
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        sc.national_number      AS train_number,
+                        sc.train_name,
+                        c.name                  AS carrier_name,
+                        to_.operating_date,
+                        MAX(ss.delay_departure_min) AS max_delay_min
+                    FROM station_stops ss
+                    JOIN train_operations to_ ON ss.train_op_id = to_.id
+                    LEFT JOIN schedules sc ON sc.schedule_id    = to_.schedule_id
+                                         AND sc.order_id        = to_.order_id
+                                         AND sc.operating_date  = to_.operating_date
+                    LEFT JOIN carriers c ON c.code = sc.carrier_code
+                    WHERE ss.delay_departure_min IS NOT NULL
+                      AND ss.delay_departure_min > 0
+                    GROUP BY to_.schedule_id, to_.order_id, to_.operating_date,
+                             sc.national_number, sc.train_name, c.name
+                    ORDER BY max_delay_min DESC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
+                rows = cur.fetchall()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Błąd bazy danych: {e}")
+
+    return [
+        AllTimeRankingEntry(
+            train_number=r[0], train_name=r[1], carrier_name=r[2],
+            operating_date=str(r[3]) if r[3] is not None else None,
+            max_delay_min=r[4],
+        )
+        for r in rows
+    ]
+
+
+@app.get("/rankings/daily", response_model=list[DailyRankingEntry])
+def rankings_daily(
+    date: str = Query(
+        ..., description="Data w formacie YYYY-MM-DD (np. 2026-06-04)"
+    ),
+    limit: int = Query(default=10, ge=1, le=100, description="Top N wyników"),
+    db_url: str = Depends(_db_url),
+):
+    """Ranking pociągów z najwyższymi opóźnieniami w danym dniu."""
+    from datetime import date as date_type
+
+    try:
+        import psycopg
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Zainstaluj: poetry install -E api")
+
+    try:
+        query_date = date_type.fromisoformat(date)
+    except ValueError:
+        raise HTTPException(400, f"Nieprawidłowy format daty: '{date}'. Użyj YYYY-MM-DD.")
+
+    try:
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        sc.national_number      AS train_number,
+                        sc.train_name,
+                        c.name                  AS carrier_name,
+                        MAX(ss.delay_departure_min) AS max_delay_min
+                    FROM station_stops ss
+                    JOIN train_operations to_ ON ss.train_op_id = to_.id
+                    LEFT JOIN schedules sc ON sc.schedule_id    = to_.schedule_id
+                                         AND sc.order_id        = to_.order_id
+                                         AND sc.operating_date  = to_.operating_date
+                    LEFT JOIN carriers c ON c.code = sc.carrier_code
+                    WHERE ss.delay_departure_min IS NOT NULL
+                      AND ss.delay_departure_min > 0
+                      AND to_.operating_date = %s
+                    GROUP BY to_.schedule_id, to_.order_id,
+                             sc.national_number, sc.train_name, c.name
+                    ORDER BY max_delay_min DESC
+                    LIMIT %s
+                    """,
+                    (query_date, limit),
+                )
+                rows = cur.fetchall()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Błąd bazy danych: {e}")
+
+    return [
+        DailyRankingEntry(
+            train_number=r[0], train_name=r[1], carrier_name=r[2],
+            max_delay_min=r[3],
+        )
+        for r in rows
+    ]
+
+
+@app.get("/rankings/monthly/trains", response_model=list[MonthlyTrainRankingEntry])
+def rankings_monthly_trains(
+    year: int = Query(..., ge=2024, le=2030, description="Rok (np. 2026)"),
+    month: int = Query(..., ge=1, le=12, description="Miesiąc (1–12)"),
+    limit: int = Query(default=10, ge=1, le=100, description="Top N wyników"),
+    db_url: str = Depends(_db_url),
+):
+    """Ranking pociągów z największą łączną liczbą minut opóźnień w danym miesiącu."""
+    try:
+        import psycopg
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Zainstaluj: poetry install -E api")
+
+    try:
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    WITH train_run_max AS (
+                        SELECT
+                            to_.schedule_id, to_.order_id, to_.operating_date,
+                            sc.national_number  AS train_number,
+                            sc.train_name,
+                            c.name              AS carrier_name,
+                            MAX(ss.delay_departure_min) AS max_delay_run
+                        FROM station_stops ss
+                        JOIN train_operations to_ ON ss.train_op_id = to_.id
+                        LEFT JOIN schedules sc ON sc.schedule_id    = to_.schedule_id
+                                             AND sc.order_id        = to_.order_id
+                                             AND sc.operating_date  = to_.operating_date
+                        LEFT JOIN carriers c ON c.code = sc.carrier_code
+                        WHERE ss.delay_departure_min IS NOT NULL
+                          AND ss.delay_departure_min > 0
+                          AND sc.national_number IS NOT NULL
+                          AND EXTRACT(YEAR  FROM to_.operating_date) = %s
+                          AND EXTRACT(MONTH FROM to_.operating_date) = %s
+                        GROUP BY to_.schedule_id, to_.order_id, to_.operating_date,
+                                 sc.national_number, sc.train_name, c.name
+                    )
+                    SELECT
+                        train_number,
+                        train_name,
+                        carrier_name,
+                        COUNT(*)                    AS trip_count,
+                        SUM(max_delay_run)          AS total_delay_min,
+                        ROUND(AVG(max_delay_run), 1) AS avg_delay_min
+                    FROM train_run_max
+                    GROUP BY train_number, train_name, carrier_name
+                    ORDER BY total_delay_min DESC
+                    LIMIT %s
+                    """,
+                    (year, month, limit),
+                )
+                rows = cur.fetchall()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Błąd bazy danych: {e}")
+
+    return [
+        MonthlyTrainRankingEntry(
+            train_number=r[0], train_name=r[1], carrier_name=r[2],
+            trip_count=r[3] or 0,
+            total_delay_min=r[4],
+            avg_delay_min=float(r[5]) if r[5] is not None else None,
+        )
+        for r in rows
+    ]
+
+
+@app.get("/rankings/monthly/carriers", response_model=list[MonthlyCarrierRankingEntry])
+def rankings_monthly_carriers(
+    year: int = Query(..., ge=2024, le=2030, description="Rok (np. 2026)"),
+    month: int = Query(..., ge=1, le=12, description="Miesiąc (1–12)"),
+    db_url: str = Depends(_db_url),
+):
+    """Ranking przewoźników z największą łączną liczbą minut opóźnień w danym miesiącu."""
+    try:
+        import psycopg
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Zainstaluj: poetry install -E api")
+
+    try:
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    WITH train_run_max AS (
+                        SELECT
+                            to_.schedule_id, to_.order_id, to_.operating_date,
+                            c.name AS carrier_name,
+                            MAX(ss.delay_departure_min) AS max_delay_run
+                        FROM station_stops ss
+                        JOIN train_operations to_ ON ss.train_op_id = to_.id
+                        LEFT JOIN schedules sc ON sc.schedule_id    = to_.schedule_id
+                                             AND sc.order_id        = to_.order_id
+                                             AND sc.operating_date  = to_.operating_date
+                        LEFT JOIN carriers c ON c.code = sc.carrier_code
+                        WHERE ss.delay_departure_min IS NOT NULL
+                          AND ss.delay_departure_min > 0
+                          AND c.name IS NOT NULL
+                          AND EXTRACT(YEAR  FROM to_.operating_date) = %s
+                          AND EXTRACT(MONTH FROM to_.operating_date) = %s
+                        GROUP BY to_.schedule_id, to_.order_id, to_.operating_date, c.name
+                    )
+                    SELECT
+                        carrier_name,
+                        COUNT(*)                    AS trip_count,
+                        SUM(max_delay_run)          AS total_delay_min,
+                        ROUND(AVG(max_delay_run), 1) AS avg_delay_min
+                    FROM train_run_max
+                    GROUP BY carrier_name
+                    ORDER BY total_delay_min DESC
+                    """,
+                    (year, month),
+                )
+                rows = cur.fetchall()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Błąd bazy danych: {e}")
+
+    return [
+        MonthlyCarrierRankingEntry(
+            carrier_name=r[0],
+            trip_count=r[1] or 0,
+            total_delay_min=r[2],
+            avg_delay_min=float(r[3]) if r[3] is not None else None,
+        )
+        for r in rows
+    ]
