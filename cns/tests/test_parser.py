@@ -295,7 +295,30 @@ class TestFiltrAnomalie:
         )
         assert stop.delay_departure_minutes == 199
 
-    def test_anomalia_201_min_odfiltrowana(self):
+    def test_realne_opoznienie_300_min_przechodzi(self):
+        # 5h opóźnienie — realne przy poważnych incydentach, nie powinno być filtrowane
+        stop = StationStop(
+            station_id="1", station_name="Test",
+            planned_sequence=1, actual_sequence=1,
+            planned_arrival=None, actual_arrival=None,
+            planned_departure=datetime(2026, 5, 27, 10, 0),
+            actual_departure=datetime(2026, 5, 27, 15, 0),  # +300 min
+        )
+        assert stop.delay_departure_minutes == 300
+
+    def test_anomalia_601_min_odfiltrowana(self):
+        # Dobowe przesunięcie rozkładowe (~1440 min) — filtrowane przez próg 600 min
+        stop = StationStop(
+            station_id="1", station_name="Test",
+            planned_sequence=1, actual_sequence=1,
+            planned_arrival=None, actual_arrival=None,
+            planned_departure=datetime(2026, 5, 27, 10, 0),
+            actual_departure=datetime(2026, 5, 27, 20, 1),  # +601 min
+        )
+        assert stop.delay_departure_minutes is None
+
+    def test_anomalia_201_min_przechodzi_po_podwyzszeniu_progu(self):
+        # 201 min było filtrowane przy progu 200, teraz powinno przechodzić
         stop = StationStop(
             station_id="1", station_name="Test",
             planned_sequence=1, actual_sequence=1,
@@ -303,7 +326,7 @@ class TestFiltrAnomalie:
             planned_departure=datetime(2026, 5, 27, 10, 0),
             actual_departure=datetime(2026, 5, 27, 13, 21),  # +201 min
         )
-        assert stop.delay_departure_minutes is None
+        assert stop.delay_departure_minutes == 201
 
     def test_wczesniejszy_przyjazd_ujemny(self):
         stop = StationStop(
