@@ -51,7 +51,7 @@ def client(monkeypatch):
 
 class TestAllTimeRanking:
     def test_returns_list(self, client):
-        rows = [("12345", "Ekspres Regionalny", "PKP Intercity S.A.", date(2026, 6, 1), 120, "Warszawa Centralna", "Kraków Główny", None, None, None)]
+        rows = [("12345", "Ekspres Regionalny", "PKP Intercity S.A.", date(2026, 6, 1), 120, "Warszawa Centralna", "Kraków Główny", None, None, None, None)]
         mock_connect, _ = _make_psycopg_mock(rows)
         with patch("psycopg.connect", mock_connect):
             resp = client.get("/rankings/all-time")
@@ -66,8 +66,8 @@ class TestAllTimeRanking:
         assert data[0]["has_bus_replacement"] is False
         assert data[0]["bus_segment"] is None
 
-    def test_returns_list_z_kz(self, client):
-        rows = [("99999", "TLK", "PKP Intercity S.A.", date(2026, 6, 1), 200, "Gdańsk Główny", "Gdynia Główna", True, "Gdańsk Główny", "Gdynia Główna")]
+    def test_returns_list_z_kz_z_disruption(self, client):
+        rows = [("99999", "TLK", "PKP Intercity S.A.", date(2026, 6, 1), 200, "Gdańsk Główny", "Gdynia Główna", True, "Gdańsk Główny", "Gdynia Główna", None)]
         mock_connect, _ = _make_psycopg_mock(rows)
         with patch("psycopg.connect", mock_connect):
             resp = client.get("/rankings/all-time")
@@ -75,6 +75,17 @@ class TestAllTimeRanking:
         data = resp.json()
         assert data[0]["has_bus_replacement"] is True
         assert data[0]["bus_segment"] == "Gdańsk Główny → Gdynia Główna"
+
+    def test_returns_list_z_kz_z_is_cancelled(self, client):
+        # KZ wykryte z all_cancelled=True, brak disruption
+        rows = [("87104", None, "IC", date(2026, 6, 3), 413, "Gorzów Wielkopolski", "Jarocin", None, None, None, True)]
+        mock_connect, _ = _make_psycopg_mock(rows)
+        with patch("psycopg.connect", mock_connect):
+            resp = client.get("/rankings/all-time")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data[0]["has_bus_replacement"] is True
+        assert data[0]["bus_segment"] == "Gorzów Wielkopolski → Jarocin"
 
     def test_limit_param_forwarded(self, client):
         mock_connect, mock_cursor = _make_psycopg_mock([])
@@ -93,7 +104,7 @@ class TestAllTimeRanking:
         assert resp.status_code == 422
 
     def test_null_train_number_allowed(self, client):
-        rows = [(None, None, "PKP Intercity S.A.", date(2026, 6, 1), 80, None, None, None, None, None)]
+        rows = [(None, None, "PKP Intercity S.A.", date(2026, 6, 1), 80, None, None, None, None, None, None)]
         mock_connect, _ = _make_psycopg_mock(rows)
         with patch("psycopg.connect", mock_connect):
             resp = client.get("/rankings/all-time")

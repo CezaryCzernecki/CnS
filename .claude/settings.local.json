@@ -29,7 +29,8 @@
       "Bash(./node_modules/.bin/next build *)",
       "Bash(npx tsc *)",
       "Bash(node_modules/.bin/tsc --noEmit)",
-      "Bash(/home/cezary/.nvm/versions/node/v24.16.0/bin/node node_modules/.bin/tsc --noEmit)"
+      "Bash(/home/cezary/.nvm/versions/node/v24.16.0/bin/node node_modules/.bin/tsc --noEmit)",
+      "WebFetch(domain:portalpasazera.pl)"
     ]
   }
 }
