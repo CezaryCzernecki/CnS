@@ -561,18 +561,20 @@ class PostgresStorage:
                 (SELECT COUNT(*) FROM train_operations)     AS train_ops,
                 (SELECT COUNT(*) FROM station_stops)        AS stops,
                 (SELECT COUNT(*) FROM disruptions)          AS disruptions,
-                (SELECT MAX(fetched_at) FROM operations_snapshots) AS last_snapshot
+                (SELECT MAX(fetched_at) FROM operations_snapshots) AS last_snapshot,
+                (SELECT MIN(operating_date) FROM train_operations) AS measurement_start
         """
         with _conn(self.database_url) as conn:
             with conn.cursor() as cur:
                 cur.execute(sql)
                 row = cur.fetchone()
                 return {
-                    "stations":      row[0],
-                    "carriers":      row[1],
-                    "snapshots":     row[2],
-                    "train_ops":     row[3],
-                    "stops":         row[4],
-                    "disruptions":   row[5],
-                    "last_snapshot": row[6],
+                    "stations":          row[0],
+                    "carriers":          row[1],
+                    "snapshots":         row[2],
+                    "train_ops":         row[3],
+                    "stops":             row[4],
+                    "disruptions":       row[5],
+                    "last_snapshot":     row[6],
+                    "measurement_start": str(row[7]) if row[7] is not None else None,
                 }

@@ -32,7 +32,9 @@
       "Bash(/home/cezary/.nvm/versions/node/v24.16.0/bin/node node_modules/.bin/tsc --noEmit)",
       "WebFetch(domain:portalpasazera.pl)",
       "Bash(chmod +x *)",
-      "Bash(crontab -l)"
+      "Bash(crontab -l)",
+      "Bash(curl -sv \"https://cyrknaszynach.pl/api/rankings/all-time?limit=10\")",
+      "Bash(xargs cat)"
     ]
   }
 }

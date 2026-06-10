@@ -69,6 +69,7 @@ export interface DbStats {
   stops: number;
   disruptions: number;
   last_snapshot: string | null;
+  measurement_start: string | null;
 }
 
 export interface AllTimeRankingEntry {
@@ -96,6 +97,8 @@ export interface MonthlyTrainRankingEntry {
   train_number: string | null;
   train_name: string | null;
   carrier_name: string | null;
+  first_station: string | null;
+  last_station: string | null;
   trip_count: number;
   total_delay_min: number | null;
   avg_delay_min: number | null;
@@ -106,6 +109,7 @@ export interface MonthlyCarrierRankingEntry {
   trip_count: number;
   total_delay_min: number | null;
   avg_delay_min: number | null;
+  cancelled_count: number;
 }
 
 // ---------------------------------------------------------------------------

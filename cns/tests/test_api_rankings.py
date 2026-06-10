@@ -169,7 +169,7 @@ class TestDailyRanking:
 
 class TestMonthlyTrainsRanking:
     def test_returns_list(self, client):
-        rows = [("99999", "Expres", "Koleje Śląskie", 30, 450, 15.0)]
+        rows = [("99999", "Expres", "Koleje Śląskie", "Kraków Główny", "Zakopane", 30, 450, 15.0)]
         mock_connect, _ = _make_psycopg_mock(rows)
         with patch("psycopg.connect", mock_connect):
             resp = client.get("/rankings/monthly/trains?year=2026&month=6")
@@ -178,6 +178,8 @@ class TestMonthlyTrainsRanking:
         assert len(data) == 1
         assert data[0]["total_delay_min"] == 450
         assert data[0]["trip_count"] == 30
+        assert data[0]["first_station"] == "Kraków Główny"
+        assert data[0]["last_station"] == "Zakopane"
 
     def test_year_and_month_required(self, client):
         resp = client.get("/rankings/monthly/trains?year=2026")
@@ -212,8 +214,8 @@ class TestMonthlyTrainsRanking:
 class TestMonthlyCarriersRanking:
     def test_returns_all_carriers(self, client):
         rows = [
-            ("PKP Intercity S.A.", 500, 8200, 16.4),
-            ("Koleje Mazowieckie", 300, 4500, 15.0),
+            ("PKP Intercity S.A.", 500, 8200, 16.4, 12),
+            ("Koleje Mazowieckie", 300, 4500, 15.0, 3),
         ]
         mock_connect, _ = _make_psycopg_mock(rows)
         with patch("psycopg.connect", mock_connect):
@@ -223,6 +225,8 @@ class TestMonthlyCarriersRanking:
         assert len(data) == 2
         assert data[0]["carrier_name"] == "PKP Intercity S.A."
         assert data[1]["total_delay_min"] == 4500
+        assert data[0]["cancelled_count"] == 12
+        assert data[1]["cancelled_count"] == 3
 
     def test_year_and_month_required(self, client):
         resp = client.get("/rankings/monthly/carriers?year=2026")
@@ -235,7 +239,7 @@ class TestMonthlyCarriersRanking:
         assert resp.status_code == 200
 
     def test_null_carrier_name_allowed(self, client):
-        rows = [(None, 10, 150, 15.0)]
+        rows = [(None, 10, 150, 15.0, 0)]
         mock_connect, _ = _make_psycopg_mock(rows)
         with patch("psycopg.connect", mock_connect):
             resp = client.get("/rankings/monthly/carriers?year=2026&month=6")

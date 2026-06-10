@@ -277,20 +277,21 @@ class TestSaveSnapshot:
 class TestGetStats:
     def test_zwraca_slownik_z_wymaganymi_kluczami(self, storage):
         mock_conn, mock_cursor = _make_conn_mock()
-        mock_cursor.fetchone.return_value = (100, 5, 10, 5000, 80000, 30, None)
+        mock_cursor.fetchone.return_value = (100, 5, 10, 5000, 80000, 30, None, None)
 
         with patch("cns.storage.postgres._conn", return_value=mock_conn):
             result = storage.get_stats()
 
         expected_keys = {"stations", "carriers", "snapshots", "train_ops", "stops",
-                         "disruptions", "last_snapshot"}
+                         "disruptions", "last_snapshot", "measurement_start"}
         assert expected_keys == set(result.keys())
         assert result["stations"] == 100
         assert result["stops"] == 80000
+        assert result["measurement_start"] is None
 
     def test_wywoluje_pojedyncze_zapytanie(self, storage):
         mock_conn, mock_cursor = _make_conn_mock()
-        mock_cursor.fetchone.return_value = (0, 0, 0, 0, 0, 0, None)
+        mock_cursor.fetchone.return_value = (0, 0, 0, 0, 0, 0, None, None)
 
         with patch("cns.storage.postgres._conn", return_value=mock_conn):
             storage.get_stats()

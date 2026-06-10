@@ -10,6 +10,7 @@ import {
   fetchRankingsDaily,
   fetchRankingsMonthlyTrains,
   fetchRankingsMonthlyCarriers,
+  fetchStats,
   type AllTimeRankingEntry,
   type DailyRankingEntry,
   type MonthlyTrainRankingEntry,
@@ -156,12 +157,18 @@ function AllTimeTab() {
   const [data, setData] = useState<AllTimeRankingEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [since, setSince] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      setData(await fetchRankingsAllTime(limit));
+      const [rows, stats] = await Promise.all([
+        fetchRankingsAllTime(limit),
+        fetchStats(),
+      ]);
+      setData(rows);
+      setSince(stats.measurement_start);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Błąd pobierania danych");
     } finally {
@@ -182,10 +189,14 @@ function AllTimeTab() {
     <BusReplacementCell key="kz" active={r.has_bus_replacement} segment={r.bus_segment} />,
   ]);
 
+  const subtitle = since
+    ? `Najwyższe opóźnienia od początku notowań (od ${fmtDate(since)}) — jeden rekord na kurs pociągu`
+    : "Najwyższe opóźnienia od początku notowań — jeden rekord na kurs pociągu";
+
   return (
     <TabLayout
       title="Rekordy opóźnień"
-      subtitle="Najwyższe opóźnienia od początku notowań — jeden rekord na kurs pociągu"
+      subtitle={subtitle}
       limit={limit}
       onLimitChange={setLimit}
       onRefresh={load}
@@ -298,6 +309,7 @@ function MonthlyTrainsTab() {
   const rows = data.map((r) => [
     <TrainCell key="t" number={r.train_number} name={r.train_name} carrier={r.carrier_name} />,
     <span key="c" className="text-zinc-600 text-sm">{cleanCarrier(r.carrier_name)}</span>,
+    <RouteCell key="r" first={r.first_station} last={r.last_station} />,
     <span key="tc" className="text-zinc-500 text-xs tabular-nums">{r.trip_count}</span>,
     <span key="td" className="font-semibold text-red-700 tabular-nums text-sm">
       {r.total_delay_min ?? "—"} min
@@ -310,7 +322,7 @@ function MonthlyTrainsTab() {
   return (
     <TabLayout
       title="Sumaryczne opóźnienia — pociągi"
-      subtitle="Suma maksymalnych opóźnień kursów w wybranym miesiącu, posortowana po numerze pociągu"
+      subtitle="Suma maksymalnych opóźnień kursów w wybranym miesiącu — każdy kierunek osobno"
       limit={limit}
       onLimitChange={setLimit}
       onRefresh={load}
@@ -318,7 +330,7 @@ function MonthlyTrainsTab() {
       extra={<MonthPicker year={year} month={month} onChange={(y, m) => { setYear(y); setMonth(m); }} />}
     >
       <RankTable
-        headers={["Pociąg", "Przewoźnik", "Kursów", "Łączne opóźnienie", "Śr. opóźnienie"]}
+        headers={["Pociąg", "Przewoźnik", "Trasa", "Lista Kursów", "Łączne opóźnienie", "Śr. opóźnienie"]}
         rows={rows}
         loading={loading}
         error={error}
@@ -365,6 +377,9 @@ function MonthlyCarriersTab() {
     <span key="ad" className="text-zinc-500 text-xs tabular-nums">
       {r.avg_delay_min != null ? `${r.avg_delay_min} min` : "—"}
     </span>,
+    <span key="cc" className={`text-xs tabular-nums font-semibold ${r.cancelled_count > 0 ? "text-orange-600" : "text-zinc-400"}`}>
+      {r.cancelled_count > 0 ? r.cancelled_count : "—"}
+    </span>,
   ]);
 
   return (
@@ -376,7 +391,7 @@ function MonthlyCarriersTab() {
       extra={<MonthPicker year={year} month={month} onChange={(y, m) => { setYear(y); setMonth(m); }} />}
     >
       <RankTable
-        headers={["Przewoźnik", "Kursów", "Łączne opóźnienie", "Śr. opóźnienie"]}
+        headers={["Przewoźnik", "Lista Kursów", "Łączne opóźnienie", "Śr. opóźnienie", "Odwołane Pociągi"]}
         rows={rows}
         loading={loading}
         error={error}

@@ -301,6 +301,8 @@ class MonthlyTrainRankingEntry(BaseModel):
     train_number: Optional[str] = None
     train_name: Optional[str] = None
     carrier_name: Optional[str] = None
+    first_station: Optional[str] = None
+    last_station: Optional[str] = None
     trip_count: int = 0
     total_delay_min: Optional[int] = None
     avg_delay_min: Optional[float] = None
@@ -311,6 +313,7 @@ class MonthlyCarrierRankingEntry(BaseModel):
     trip_count: int = 0
     total_delay_min: Optional[int] = None
     avg_delay_min: Optional[float] = None
+    cancelled_count: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -700,6 +703,7 @@ def rankings_all_time(
                         FROM station_stops ss
                         WHERE ss.train_op_id = dr.latest_train_op_id
                     ) kz_stops ON TRUE
+                    WHERE NOT COALESCE(kz_stops.all_cancelled, FALSE)
                     ORDER BY dr.max_delay_min DESC
                     """,
                     (limit,),
@@ -761,7 +765,6 @@ def rankings_daily(
                         FROM mv_train_run_delays
                         WHERE operating_date = %s
                         ORDER BY max_delay_min DESC
-                        LIMIT %s
                     ),
                     {_FIRST_LAST_ST_CTES}
                     SELECT
@@ -779,7 +782,14 @@ def rankings_daily(
                     LEFT JOIN carriers c   ON c.code = sc.carrier_code
                     LEFT JOIN first_st fst ON fst.train_op_id = dr.latest_train_op_id
                     LEFT JOIN last_st  lst ON lst.train_op_id = dr.latest_train_op_id
+                    LEFT JOIN LATERAL (
+                        SELECT BOOL_AND(ss.is_cancelled) AS all_cancelled
+                        FROM station_stops ss
+                        WHERE ss.train_op_id = dr.latest_train_op_id
+                    ) chk ON TRUE
+                    WHERE NOT COALESCE(chk.all_cancelled, FALSE)
                     ORDER BY dr.max_delay_min DESC
+                    LIMIT %s
                     """,
                     (query_date, limit),
                 )
@@ -811,22 +821,64 @@ def rankings_monthly_trains(
             with conn.cursor() as cur:
                 cur.execute(
                     """
+                    WITH date_bounds AS (
+                        SELECT make_date(%s, %s, 1)                          AS month_start,
+                               make_date(%s, %s, 1) + INTERVAL '1 month'     AS month_end
+                    ),
+                    unique_routes AS (
+                        SELECT dr.schedule_id, dr.order_id, MIN(sc.id) AS sched_id
+                        FROM date_bounds db, mv_train_run_delays dr
+                        JOIN schedules sc ON sc.schedule_id   = dr.schedule_id
+                                        AND sc.order_id       = dr.order_id
+                                        AND sc.operating_date = dr.operating_date
+                                        AND sc.national_number IS NOT NULL
+                        WHERE dr.operating_date >= db.month_start
+                          AND dr.operating_date <  db.month_end
+                        GROUP BY dr.schedule_id, dr.order_id
+                    ),
+                    route_stations AS (
+                        SELECT
+                            ur.schedule_id,
+                            ur.order_id,
+                            fs.name AS first_station,
+                            ls.name AS last_station
+                        FROM unique_routes ur
+                        LEFT JOIN LATERAL (
+                            SELECT st.name
+                            FROM schedule_stops ss
+                            JOIN stations st ON st.station_id = ss.station_id
+                            WHERE ss.schedule_id = ur.sched_id
+                            ORDER BY ss.order_number ASC LIMIT 1
+                        ) fs ON TRUE
+                        LEFT JOIN LATERAL (
+                            SELECT st.name
+                            FROM schedule_stops ss
+                            JOIN stations st ON st.station_id = ss.station_id
+                            WHERE ss.schedule_id = ur.sched_id
+                            ORDER BY ss.order_number DESC LIMIT 1
+                        ) ls ON TRUE
+                    )
                     SELECT
-                        sc.national_number  AS train_number,
+                        sc.national_number       AS train_number,
                         sc.train_name,
-                        c.name              AS carrier_name,
-                        COUNT(*)                     AS trip_count,
-                        SUM(dr.max_delay_min)        AS total_delay_min,
-                        ROUND(AVG(dr.max_delay_min), 1) AS avg_delay_min
-                    FROM mv_train_run_delays dr
+                        c.name                   AS carrier_name,
+                        rs.first_station,
+                        rs.last_station,
+                        COUNT(*)                          AS trip_count,
+                        SUM(dr.max_delay_min)             AS total_delay_min,
+                        ROUND(AVG(dr.max_delay_min), 1)   AS avg_delay_min
+                    FROM date_bounds db, mv_train_run_delays dr
                     JOIN schedules sc ON sc.schedule_id   = dr.schedule_id
                                     AND sc.order_id       = dr.order_id
                                     AND sc.operating_date = dr.operating_date
                                     AND sc.national_number IS NOT NULL
                     LEFT JOIN carriers c ON c.code = sc.carrier_code
-                    WHERE dr.operating_date >= make_date(%s, %s, 1)
-                      AND dr.operating_date <  make_date(%s, %s, 1) + INTERVAL '1 month'
-                    GROUP BY sc.national_number, sc.train_name, c.name
+                    LEFT JOIN route_stations rs ON rs.schedule_id = sc.schedule_id
+                                               AND rs.order_id    = sc.order_id
+                    WHERE dr.operating_date >= db.month_start
+                      AND dr.operating_date <  db.month_end
+                    GROUP BY sc.national_number, sc.train_name, c.name,
+                             rs.first_station, rs.last_station
                     ORDER BY total_delay_min DESC
                     LIMIT %s
                     """,
@@ -841,9 +893,10 @@ def rankings_monthly_trains(
     return [
         MonthlyTrainRankingEntry(
             train_number=r[0], train_name=r[1], carrier_name=r[2],
-            trip_count=r[3] or 0,
-            total_delay_min=r[4],
-            avg_delay_min=float(r[5]) if r[5] is not None else None,
+            first_station=r[3], last_station=r[4],
+            trip_count=r[5] or 0,
+            total_delay_min=r[6],
+            avg_delay_min=float(r[7]) if r[7] is not None else None,
         )
         for r in rows
     ]
@@ -861,20 +914,43 @@ def rankings_monthly_carriers(
             with conn.cursor() as cur:
                 cur.execute(
                     """
+                    WITH date_bounds AS (
+                        SELECT make_date(%s, %s, 1)                          AS month_start,
+                               make_date(%s, %s, 1) + INTERVAL '1 month'     AS month_end
+                    ),
+                    cancelled_runs AS (
+                        SELECT sc.carrier_code
+                        FROM date_bounds db, mv_train_run_delays dr
+                        JOIN schedules sc ON sc.schedule_id   = dr.schedule_id
+                                        AND sc.order_id       = dr.order_id
+                                        AND sc.operating_date = dr.operating_date
+                        JOIN station_stops ss ON ss.train_op_id = dr.latest_train_op_id
+                        WHERE dr.operating_date >= db.month_start
+                          AND dr.operating_date <  db.month_end
+                        GROUP BY sc.carrier_code, dr.schedule_id, dr.order_id, dr.operating_date
+                        HAVING BOOL_AND(ss.is_cancelled) = TRUE
+                    ),
+                    cancelled_per_carrier AS (
+                        SELECT carrier_code, COUNT(*) AS cancelled_count
+                        FROM cancelled_runs
+                        GROUP BY carrier_code
+                    )
                     SELECT
-                        c.name AS carrier_name,
-                        COUNT(*)                     AS trip_count,
-                        SUM(dr.max_delay_min)        AS total_delay_min,
-                        ROUND(AVG(dr.max_delay_min), 1) AS avg_delay_min
-                    FROM mv_train_run_delays dr
+                        c.name                           AS carrier_name,
+                        COUNT(*)                         AS trip_count,
+                        SUM(dr.max_delay_min)            AS total_delay_min,
+                        ROUND(AVG(dr.max_delay_min), 1)  AS avg_delay_min,
+                        COALESCE(cc.cancelled_count, 0)  AS cancelled_count
+                    FROM date_bounds db, mv_train_run_delays dr
                     JOIN schedules sc ON sc.schedule_id   = dr.schedule_id
                                     AND sc.order_id       = dr.order_id
                                     AND sc.operating_date = dr.operating_date
-                    LEFT JOIN carriers c ON c.code = sc.carrier_code
-                    WHERE dr.operating_date >= make_date(%s, %s, 1)
-                      AND dr.operating_date <  make_date(%s, %s, 1) + INTERVAL '1 month'
+                    LEFT JOIN carriers c  ON c.code = sc.carrier_code
+                    LEFT JOIN cancelled_per_carrier cc ON cc.carrier_code = sc.carrier_code
+                    WHERE dr.operating_date >= db.month_start
+                      AND dr.operating_date <  db.month_end
                       AND c.name IS NOT NULL
-                    GROUP BY c.name
+                    GROUP BY c.name, cc.cancelled_count
                     ORDER BY total_delay_min DESC
                     """,
                     (year, month, year, month),
@@ -891,6 +967,7 @@ def rankings_monthly_carriers(
             trip_count=r[1] or 0,
             total_delay_min=r[2],
             avg_delay_min=float(r[3]) if r[3] is not None else None,
+            cancelled_count=r[4] or 0,
         )
         for r in rows
     ]
