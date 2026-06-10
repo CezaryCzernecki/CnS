@@ -705,8 +705,9 @@ def rankings_all_time(
                     ) kz_stops ON TRUE
                     WHERE NOT COALESCE(kz_stops.all_cancelled, FALSE)
                     ORDER BY dr.max_delay_min DESC
+                    LIMIT %s
                     """,
-                    (limit,),
+                    (limit * 10, limit),
                 )
                 rows = cur.fetchall()
     except HTTPException:
@@ -919,15 +920,18 @@ def rankings_monthly_carriers(
                                make_date(%s, %s, 1) + INTERVAL '1 month'     AS month_end
                     ),
                     cancelled_runs AS (
+                        -- Pobieramy WSZYSTKIE odwołane kursy bezpośrednio z train_operations,
+                        -- bo mv_train_run_delays zawiera tylko kursy z delay_departure_min > 0
+                        -- (w pełni odwołane pociągi nigdy nie odjechały = brak opóźnienia = brak w MV)
                         SELECT sc.carrier_code
-                        FROM date_bounds db, mv_train_run_delays dr
-                        JOIN schedules sc ON sc.schedule_id   = dr.schedule_id
-                                        AND sc.order_id       = dr.order_id
-                                        AND sc.operating_date = dr.operating_date
-                        JOIN station_stops ss ON ss.train_op_id = dr.latest_train_op_id
-                        WHERE dr.operating_date >= db.month_start
-                          AND dr.operating_date <  db.month_end
-                        GROUP BY sc.carrier_code, dr.schedule_id, dr.order_id, dr.operating_date
+                        FROM date_bounds db, train_operations to_
+                        JOIN schedules sc ON sc.schedule_id   = to_.schedule_id
+                                        AND sc.order_id       = to_.order_id
+                                        AND sc.operating_date = to_.operating_date
+                        JOIN station_stops ss ON ss.train_op_id = to_.id
+                        WHERE to_.operating_date >= db.month_start
+                          AND to_.operating_date <  db.month_end
+                        GROUP BY sc.carrier_code, to_.schedule_id, to_.order_id, to_.operating_date
                         HAVING BOOL_AND(ss.is_cancelled) = TRUE
                     ),
                     cancelled_per_carrier AS (
