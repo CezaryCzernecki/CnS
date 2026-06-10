@@ -92,6 +92,36 @@ def _db_url() -> str:
     return url
 
 
+def _get_conn(db_url: str):
+    """Otwiera połączenie psycopg3; rzuca 503 jeśli biblioteka nie jest zainstalowana."""
+    try:
+        import psycopg
+        return psycopg.connect(db_url)
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Zainstaluj: poetry install -E api")
+
+
+# Wspólne CTE first_st / last_st używane w rankingach all-time i daily.
+# Zakłada istnienie CTE `top_runs` z kolumną `latest_train_op_id`.
+_FIRST_LAST_ST_CTES = """\
+first_st AS (
+    SELECT DISTINCT ON (ss.train_op_id)
+        ss.train_op_id, st.name AS station_name
+    FROM top_runs tr
+    JOIN station_stops ss ON ss.train_op_id = tr.latest_train_op_id
+    LEFT JOIN stations st ON st.station_id = ss.station_id
+    ORDER BY ss.train_op_id, ss.planned_sequence ASC
+),
+last_st AS (
+    SELECT DISTINCT ON (ss.train_op_id)
+        ss.train_op_id, st.name AS station_name
+    FROM top_runs tr
+    JOIN station_stops ss ON ss.train_op_id = tr.latest_train_op_id
+    LEFT JOIN stations st ON st.station_id = ss.station_id
+    ORDER BY ss.train_op_id, ss.planned_sequence DESC
+)"""
+
+
 def _fetch_weather(db_url: str, station_id: str) -> dict:
     """Pobiera najnowszą obserwację pogodową z bazy. Błąd → pusty słownik."""
     try:
@@ -617,50 +647,18 @@ def rankings_all_time(
 ):
     """Ranking pociągów z najwyższymi opóźnieniami od początku notowań."""
     try:
-        import psycopg
-    except ImportError:
-        raise HTTPException(status_code=503, detail="Zainstaluj: poetry install -E api")
-
-    try:
-        with psycopg.connect(db_url) as conn:
+        with _get_conn(db_url) as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
-                    WITH top_stops AS (
-                        SELECT train_op_id, delay_departure_min
-                        FROM station_stops
-                        WHERE delay_departure_min > 0
-                        ORDER BY delay_departure_min DESC
-                        LIMIT 50000
+                    f"""
+                    WITH top_runs AS (
+                        SELECT schedule_id, order_id, operating_date,
+                               max_delay_min, latest_train_op_id
+                        FROM mv_train_run_delays
+                        ORDER BY max_delay_min DESC
+                        LIMIT %s
                     ),
-                    deduped_runs AS (
-                        SELECT DISTINCT ON (to_.schedule_id, to_.order_id, to_.operating_date)
-                            to_.id              AS train_op_id,
-                            to_.schedule_id,
-                            to_.order_id,
-                            to_.operating_date,
-                            ts.delay_departure_min AS max_delay_min
-                        FROM top_stops ts
-                        JOIN train_operations to_ ON ts.train_op_id = to_.id
-                        ORDER BY to_.schedule_id, to_.order_id, to_.operating_date,
-                                 ts.delay_departure_min DESC
-                    ),
-                    first_st AS (
-                        SELECT DISTINCT ON (ss.train_op_id)
-                            ss.train_op_id, st.name AS station_name
-                        FROM station_stops ss
-                        LEFT JOIN stations st ON st.station_id = ss.station_id
-                        WHERE ss.train_op_id IN (SELECT train_op_id FROM deduped_runs)
-                        ORDER BY ss.train_op_id, ss.planned_sequence ASC
-                    ),
-                    last_st AS (
-                        SELECT DISTINCT ON (ss.train_op_id)
-                            ss.train_op_id, st.name AS station_name
-                        FROM station_stops ss
-                        LEFT JOIN stations st ON st.station_id = ss.station_id
-                        WHERE ss.train_op_id IN (SELECT train_op_id FROM deduped_runs)
-                        ORDER BY ss.train_op_id, ss.planned_sequence DESC
-                    )
+                    {_FIRST_LAST_ST_CTES}
                     SELECT
                         sc.national_number  AS train_number,
                         sc.train_name,
@@ -673,19 +671,19 @@ def rankings_all_time(
                         kz.kz_start,
                         kz.kz_end,
                         kz_stops.all_cancelled
-                    FROM deduped_runs dr
-                    JOIN schedules sc ON sc.schedule_id    = dr.schedule_id
-                                    AND sc.order_id        = dr.order_id
-                                    AND sc.operating_date  = dr.operating_date
+                    FROM top_runs dr
+                    JOIN schedules sc ON sc.schedule_id   = dr.schedule_id
+                                    AND sc.order_id       = dr.order_id
+                                    AND sc.operating_date = dr.operating_date
                                     AND sc.national_number IS NOT NULL
                     LEFT JOIN carriers c   ON c.code = sc.carrier_code
-                    LEFT JOIN first_st fst ON fst.train_op_id = dr.train_op_id
-                    LEFT JOIN last_st  lst ON lst.train_op_id = dr.train_op_id
+                    LEFT JOIN first_st fst ON fst.train_op_id = dr.latest_train_op_id
+                    LEFT JOIN last_st  lst ON lst.train_op_id = dr.latest_train_op_id
                     LEFT JOIN LATERAL (
                         SELECT
-                            TRUE              AS has_kz,
-                            st_s.name         AS kz_start,
-                            st_e.name         AS kz_end
+                            TRUE      AS has_kz,
+                            st_s.name AS kz_start,
+                            st_e.name AS kz_end
                         FROM disruption_affected_routes dar
                         JOIN disruptions d
                             ON d.id = dar.disruption_id
@@ -700,22 +698,15 @@ def rankings_all_time(
                     LEFT JOIN LATERAL (
                         SELECT BOOL_AND(ss.is_cancelled) AS all_cancelled
                         FROM station_stops ss
-                        WHERE ss.train_op_id = (
-                            SELECT to_last.id
-                            FROM train_operations to_last
-                            WHERE to_last.schedule_id   = dr.schedule_id
-                              AND to_last.order_id      = dr.order_id
-                              AND to_last.operating_date = dr.operating_date
-                            ORDER BY to_last.collected_at DESC
-                            LIMIT 1
-                        )
+                        WHERE ss.train_op_id = dr.latest_train_op_id
                     ) kz_stops ON TRUE
                     ORDER BY dr.max_delay_min DESC
-                    LIMIT %s
                     """,
                     (limit,),
                 )
                 rows = cur.fetchall()
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Błąd bazy danych: {e}")
 
@@ -755,69 +746,46 @@ def rankings_daily(
     from datetime import date as date_type
 
     try:
-        import psycopg
-    except ImportError:
-        raise HTTPException(status_code=503, detail="Zainstaluj: poetry install -E api")
-
-    try:
         query_date = date_type.fromisoformat(date)
     except ValueError:
         raise HTTPException(400, f"Nieprawidłowy format daty: '{date}'. Użyj YYYY-MM-DD.")
 
     try:
-        with psycopg.connect(db_url) as conn:
+        with _get_conn(db_url) as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
-                    WITH train_runs AS (
-                        SELECT
-                            to_.schedule_id, to_.order_id,
-                            sc.national_number, sc.train_name,
-                            c.name              AS carrier_name,
-                            MAX(ss.delay_departure_min) AS max_delay_min,
-                            MIN(ss.train_op_id) AS sample_op_id
-                        FROM station_stops ss
-                        JOIN train_operations to_ ON ss.train_op_id = to_.id
-                        JOIN schedules sc ON sc.schedule_id    = to_.schedule_id
-                                        AND sc.order_id        = to_.order_id
-                                        AND sc.operating_date  = to_.operating_date
-                                        AND sc.national_number IS NOT NULL
-                        LEFT JOIN carriers c ON c.code = sc.carrier_code
-                        WHERE ss.delay_departure_min > 0
-                          AND to_.operating_date = %s
-                        GROUP BY to_.schedule_id, to_.order_id,
-                                 sc.national_number, sc.train_name, c.name
+                    f"""
+                    WITH top_runs AS (
+                        SELECT schedule_id, order_id, operating_date,
+                               max_delay_min, latest_train_op_id
+                        FROM mv_train_run_delays
+                        WHERE operating_date = %s
+                        ORDER BY max_delay_min DESC
+                        LIMIT %s
                     ),
-                    first_st AS (
-                        SELECT DISTINCT ON (ss.train_op_id)
-                            ss.train_op_id, st.name AS station_name
-                        FROM station_stops ss
-                        LEFT JOIN stations st ON st.station_id = ss.station_id
-                        WHERE ss.train_op_id IN (SELECT sample_op_id FROM train_runs)
-                        ORDER BY ss.train_op_id, ss.planned_sequence ASC
-                    ),
-                    last_st AS (
-                        SELECT DISTINCT ON (ss.train_op_id)
-                            ss.train_op_id, st.name AS station_name
-                        FROM station_stops ss
-                        LEFT JOIN stations st ON st.station_id = ss.station_id
-                        WHERE ss.train_op_id IN (SELECT sample_op_id FROM train_runs)
-                        ORDER BY ss.train_op_id, ss.planned_sequence DESC
-                    )
+                    {_FIRST_LAST_ST_CTES}
                     SELECT
-                        tr.national_number, tr.train_name, tr.carrier_name,
-                        tr.max_delay_min,
-                        fst.station_name AS first_station,
-                        lst.station_name AS last_station
-                    FROM train_runs tr
-                    LEFT JOIN first_st fst ON fst.train_op_id = tr.sample_op_id
-                    LEFT JOIN last_st  lst ON lst.train_op_id = tr.sample_op_id
-                    ORDER BY tr.max_delay_min DESC
-                    LIMIT %s
+                        sc.national_number AS train_number,
+                        sc.train_name,
+                        c.name             AS carrier_name,
+                        dr.max_delay_min,
+                        fst.station_name   AS first_station,
+                        lst.station_name   AS last_station
+                    FROM top_runs dr
+                    JOIN schedules sc ON sc.schedule_id   = dr.schedule_id
+                                    AND sc.order_id       = dr.order_id
+                                    AND sc.operating_date = dr.operating_date
+                                    AND sc.national_number IS NOT NULL
+                    LEFT JOIN carriers c   ON c.code = sc.carrier_code
+                    LEFT JOIN first_st fst ON fst.train_op_id = dr.latest_train_op_id
+                    LEFT JOIN last_st  lst ON lst.train_op_id = dr.latest_train_op_id
+                    ORDER BY dr.max_delay_min DESC
                     """,
                     (query_date, limit),
                 )
                 rows = cur.fetchall()
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Błąd bazy danych: {e}")
 
@@ -839,51 +807,34 @@ def rankings_monthly_trains(
 ):
     """Ranking pociągów z największą łączną liczbą minut opóźnień w danym miesiącu."""
     try:
-        import psycopg
-    except ImportError:
-        raise HTTPException(status_code=503, detail="Zainstaluj: poetry install -E api")
-
-    try:
-        with psycopg.connect(db_url) as conn:
+        with _get_conn(db_url) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    WITH train_run_max AS (
-                        SELECT
-                            to_.schedule_id, to_.order_id, to_.operating_date,
-                            sc.national_number  AS train_number,
-                            sc.train_name,
-                            c.name              AS carrier_name,
-                            MAX(ss.delay_departure_min) AS max_delay_run
-                        FROM station_stops ss
-                        JOIN train_operations to_ ON ss.train_op_id = to_.id
-                        LEFT JOIN schedules sc ON sc.schedule_id    = to_.schedule_id
-                                             AND sc.order_id        = to_.order_id
-                                             AND sc.operating_date  = to_.operating_date
-                        LEFT JOIN carriers c ON c.code = sc.carrier_code
-                        WHERE ss.delay_departure_min IS NOT NULL
-                          AND ss.delay_departure_min > 0
-                          AND sc.national_number IS NOT NULL
-                          AND EXTRACT(YEAR  FROM to_.operating_date) = %s
-                          AND EXTRACT(MONTH FROM to_.operating_date) = %s
-                        GROUP BY to_.schedule_id, to_.order_id, to_.operating_date,
-                                 sc.national_number, sc.train_name, c.name
-                    )
                     SELECT
-                        train_number,
-                        train_name,
-                        carrier_name,
-                        COUNT(*)                    AS trip_count,
-                        SUM(max_delay_run)          AS total_delay_min,
-                        ROUND(AVG(max_delay_run), 1) AS avg_delay_min
-                    FROM train_run_max
-                    GROUP BY train_number, train_name, carrier_name
+                        sc.national_number  AS train_number,
+                        sc.train_name,
+                        c.name              AS carrier_name,
+                        COUNT(*)                     AS trip_count,
+                        SUM(dr.max_delay_min)        AS total_delay_min,
+                        ROUND(AVG(dr.max_delay_min), 1) AS avg_delay_min
+                    FROM mv_train_run_delays dr
+                    JOIN schedules sc ON sc.schedule_id   = dr.schedule_id
+                                    AND sc.order_id       = dr.order_id
+                                    AND sc.operating_date = dr.operating_date
+                                    AND sc.national_number IS NOT NULL
+                    LEFT JOIN carriers c ON c.code = sc.carrier_code
+                    WHERE dr.operating_date >= make_date(%s, %s, 1)
+                      AND dr.operating_date <  make_date(%s, %s, 1) + INTERVAL '1 month'
+                    GROUP BY sc.national_number, sc.train_name, c.name
                     ORDER BY total_delay_min DESC
                     LIMIT %s
                     """,
-                    (year, month, limit),
+                    (year, month, year, month, limit),
                 )
                 rows = cur.fetchall()
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Błąd bazy danych: {e}")
 
@@ -906,45 +857,31 @@ def rankings_monthly_carriers(
 ):
     """Ranking przewoźników z największą łączną liczbą minut opóźnień w danym miesiącu."""
     try:
-        import psycopg
-    except ImportError:
-        raise HTTPException(status_code=503, detail="Zainstaluj: poetry install -E api")
-
-    try:
-        with psycopg.connect(db_url) as conn:
+        with _get_conn(db_url) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    WITH train_run_max AS (
-                        SELECT
-                            to_.schedule_id, to_.order_id, to_.operating_date,
-                            c.name AS carrier_name,
-                            MAX(ss.delay_departure_min) AS max_delay_run
-                        FROM station_stops ss
-                        JOIN train_operations to_ ON ss.train_op_id = to_.id
-                        LEFT JOIN schedules sc ON sc.schedule_id    = to_.schedule_id
-                                             AND sc.order_id        = to_.order_id
-                                             AND sc.operating_date  = to_.operating_date
-                        LEFT JOIN carriers c ON c.code = sc.carrier_code
-                        WHERE ss.delay_departure_min IS NOT NULL
-                          AND ss.delay_departure_min > 0
-                          AND c.name IS NOT NULL
-                          AND EXTRACT(YEAR  FROM to_.operating_date) = %s
-                          AND EXTRACT(MONTH FROM to_.operating_date) = %s
-                        GROUP BY to_.schedule_id, to_.order_id, to_.operating_date, c.name
-                    )
                     SELECT
-                        carrier_name,
-                        COUNT(*)                    AS trip_count,
-                        SUM(max_delay_run)          AS total_delay_min,
-                        ROUND(AVG(max_delay_run), 1) AS avg_delay_min
-                    FROM train_run_max
-                    GROUP BY carrier_name
+                        c.name AS carrier_name,
+                        COUNT(*)                     AS trip_count,
+                        SUM(dr.max_delay_min)        AS total_delay_min,
+                        ROUND(AVG(dr.max_delay_min), 1) AS avg_delay_min
+                    FROM mv_train_run_delays dr
+                    JOIN schedules sc ON sc.schedule_id   = dr.schedule_id
+                                    AND sc.order_id       = dr.order_id
+                                    AND sc.operating_date = dr.operating_date
+                    LEFT JOIN carriers c ON c.code = sc.carrier_code
+                    WHERE dr.operating_date >= make_date(%s, %s, 1)
+                      AND dr.operating_date <  make_date(%s, %s, 1) + INTERVAL '1 month'
+                      AND c.name IS NOT NULL
+                    GROUP BY c.name
                     ORDER BY total_delay_min DESC
                     """,
-                    (year, month),
+                    (year, month, year, month),
                 )
                 rows = cur.fetchall()
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Błąd bazy danych: {e}")
 

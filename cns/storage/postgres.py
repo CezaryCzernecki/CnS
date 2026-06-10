@@ -528,6 +528,23 @@ class PostgresStorage:
         except Exception as e:
             logger.warning("Błąd odświeżania feature store: %s", e)
 
+    def refresh_rankings(self) -> None:
+        """REFRESH MATERIALIZED VIEW CONCURRENTLY mv_train_run_delays.
+
+        Wymaga autocommit – REFRESH CONCURRENTLY nie może być wewnątrz transakcji.
+        Wywoływana z wątku demona po każdym save_snapshot().
+        """
+        import time
+        t0 = time.monotonic()
+        try:
+            with _conn_autocommit(self.database_url) as conn:
+                conn.execute(
+                    "REFRESH MATERIALIZED VIEW CONCURRENTLY mv_train_run_delays"
+                )
+            logger.info("Odświeżono mv_train_run_delays (%.1fs)", time.monotonic() - t0)
+        except Exception as e:
+            logger.warning("Błąd odświeżania rankingów: %s", e)
+
     # -------------------------------------------------------------------------
     # Diagnostyka
     # -------------------------------------------------------------------------

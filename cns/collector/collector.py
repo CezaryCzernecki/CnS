@@ -254,6 +254,7 @@ class DataCollector:
             if not self.dry_run:
                 self.storage.save_snapshot(snapshot)
                 self._refresh_features_async()
+                self._refresh_rankings_async()
             else:
                 logger.info("[DRY RUN] Snapshot: %d pociągów, %d przystanków",
                             snapshot.total_trains, snapshot.total_stops)
@@ -280,6 +281,22 @@ class DataCollector:
             self.storage.refresh_features()
         except Exception as e:
             logger.warning("Błąd odświeżania feature store (wątek): %s", e)
+
+    def _refresh_rankings_async(self) -> None:
+        if not hasattr(self.storage, "refresh_rankings"):
+            return
+        t = threading.Thread(
+            target=self._do_refresh_rankings,
+            name="rankings-refresh",
+            daemon=True,
+        )
+        t.start()
+
+    def _do_refresh_rankings(self) -> None:
+        try:
+            self.storage.refresh_rankings()
+        except Exception as e:
+            logger.warning("Błąd odświeżania rankingów (wątek): %s", e)
 
     def _fetch_disruptions(self, force: bool = False) -> None:
         logger.info("Pobieram /disruptions...")
