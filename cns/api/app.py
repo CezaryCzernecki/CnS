@@ -865,9 +865,11 @@ def rankings_monthly_trains(
                         c.name                   AS carrier_name,
                         rs.first_station,
                         rs.last_station,
-                        COUNT(*)                          AS trip_count,
-                        SUM(dr.max_delay_min)             AS total_delay_min,
-                        ROUND(AVG(dr.max_delay_min), 1)   AS avg_delay_min
+                        -- DISTINCT operating_date: jeden kurs = jeden dzień,
+                        -- nawet jeśli PKP użył kilku schedule_id dla tego pociągu w miesiącu
+                        COUNT(DISTINCT dr.operating_date)         AS trip_count,
+                        SUM(dr.max_delay_min)                     AS total_delay_min,
+                        ROUND(AVG(dr.max_delay_min), 1)           AS avg_delay_min
                     FROM date_bounds db, mv_train_run_delays dr
                     JOIN schedules sc ON sc.schedule_id   = dr.schedule_id
                                     AND sc.order_id       = dr.order_id
@@ -919,24 +921,13 @@ def rankings_monthly_carriers(
                         SELECT make_date(%s, %s, 1)                          AS month_start,
                                make_date(%s, %s, 1) + INTERVAL '1 month'     AS month_end
                     ),
-                    cancelled_runs AS (
-                        -- Pobieramy WSZYSTKIE odwołane kursy bezpośrednio z train_operations,
-                        -- bo mv_train_run_delays zawiera tylko kursy z delay_departure_min > 0
-                        -- (w pełni odwołane pociągi nigdy nie odjechały = brak opóźnienia = brak w MV)
-                        SELECT sc.carrier_code
-                        FROM date_bounds db, train_operations to_
-                        JOIN schedules sc ON sc.schedule_id   = to_.schedule_id
-                                        AND sc.order_id       = to_.order_id
-                                        AND sc.operating_date = to_.operating_date
-                        JOIN station_stops ss ON ss.train_op_id = to_.id
-                        WHERE to_.operating_date >= db.month_start
-                          AND to_.operating_date <  db.month_end
-                        GROUP BY sc.carrier_code, to_.schedule_id, to_.order_id, to_.operating_date
-                        HAVING BOOL_AND(ss.is_cancelled) = TRUE
-                    ),
                     cancelled_per_carrier AS (
-                        SELECT carrier_code, COUNT(*) AS cancelled_count
-                        FROM cancelled_runs
+                        -- mv_cancelled_runs: pre-agregowany widok zmaterializowany
+                        -- (odświeżany co godzinę) — zastępuje ciężkie skanowanie train_operations
+                        SELECT carrier_code, SUM(cancelled_count) AS cancelled_count
+                        FROM mv_cancelled_runs, date_bounds
+                        WHERE operating_date >= date_bounds.month_start
+                          AND operating_date <  date_bounds.month_end
                         GROUP BY carrier_code
                     )
                     SELECT
