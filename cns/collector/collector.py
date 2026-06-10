@@ -100,6 +100,8 @@ class DataCollector:
         self._last_operations_version: Optional[str] = None
         self._last_calendar_year: Optional[int] = None
         self._last_health: Optional[float] = None
+        self._last_rankings_refresh: Optional[float] = None
+        self._rankings_refresh_interval = 3600  # 1h — REFRESH MV jest kosztowny
         self._health_checker: Optional[HealthChecker] = None
         if hasattr(storage, "database_url") and not dry_run:
             self._health_checker = HealthChecker(storage.database_url)
@@ -285,6 +287,13 @@ class DataCollector:
     def _refresh_rankings_async(self) -> None:
         if not hasattr(self.storage, "refresh_rankings"):
             return
+        now = time.monotonic()
+        if (
+            self._last_rankings_refresh is not None
+            and (now - self._last_rankings_refresh) < self._rankings_refresh_interval
+        ):
+            return
+        self._last_rankings_refresh = now
         t = threading.Thread(
             target=self._do_refresh_rankings,
             name="rankings-refresh",
