@@ -125,10 +125,10 @@ SQL
     echo "  [3/4] train_operations DELETE: OK"
 
     # 2d. VACUUM — fizyczne zwolnienie miejsca na dysku (kluczowe dla pętli)
+    # PARALLEL 0: wyłącza parallel workers, unika alokacji DSM w /dev/shm kontenera.
     $PSQL \
-        -c "SET maintenance_work_mem = '512MB'" \
-        -c "VACUUM ANALYZE station_stops" \
-        -c "VACUUM ANALYZE train_operations"
+        -c "VACUUM (ANALYZE, PARALLEL 0) station_stops" \
+        -c "VACUUM (ANALYZE, PARALLEL 0) train_operations"
     echo "  [4/4] VACUUM: OK"
 
     echo "  Wolne po:    $(df -h / | tail -1 | awk '{print $4}')"
