@@ -2,11 +2,17 @@
 """
 Walidator rankingów — uruchamiany 4× na dobę przez cron.
 
-Cron (crontab -e):
-    0 6,12,18,0 * * * cd /home/cezary/cns/CnS && \
-        poetry run python scripts/validate_rankings_daily.py >> logs/validator.log 2>&1
+Uruchomienie ręczne:
+    poetry run python scripts/validate_rankings_daily.py
 
-Wyniki JSON: logs/rankings_validation_YYYY-MM-DD_HH.json (starsze niż 14 dni usuwane).
+Cron (crontab -e):
+    0 6,12,18,0 * * * /home/cezary/cns/CnS/scripts/validate_rankings_daily.sh
+
+    Skrypt .sh ustawia DATABASE_URL na 127.0.0.1:5432 (host→kontener),
+    bo cron nie dziedziczy PATH i .env używa hostname "db" widocznego tylko
+    wewnątrz sieci Docker. Port jest ekspozowany przez docker-compose.yml.
+
+Wyniki JSON: logs/rankings_validation_YYYY-MM-DD_HHMM.json (starsze niż 14 dni usuwane).
 """
 
 import json

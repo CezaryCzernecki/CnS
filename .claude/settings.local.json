@@ -34,7 +34,10 @@
       "Bash(chmod +x *)",
       "Bash(crontab -l)",
       "Bash(curl -sv \"https://cyrknaszynach.pl/api/rankings/all-time?limit=10\")",
-      "Bash(xargs cat)"
+      "Bash(xargs cat)",
+      "Bash(poetry env *)",
+      "Bash(/home/cezary/.cache/pypoetry/virtualenvs/cyrk-na-szynach-KunUUDu--py3.12/bin/python *)",
+      "Bash(printenv DATABASE_URL)"
     ]
   }
 }
