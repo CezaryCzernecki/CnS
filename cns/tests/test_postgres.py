@@ -160,38 +160,40 @@ class TestUpsertCarriers:
 
 
 # ---------------------------------------------------------------------------
-# save_snapshot – optymalizacja batch insert
+# save_snapshot – hot storage: UPSERT train_runs + station_stops_hot
 # ---------------------------------------------------------------------------
 
 class TestSaveSnapshot:
-    def test_wstawia_snapshot_i_zwraca_id(self, storage):
+    def test_wstawia_snapshot_do_bazy(self, storage):
+        """Snapshot INSERT trafia do operations_snapshots (health monitoring)."""
         mock_conn, mock_cursor = _make_conn_mock()
-        mock_cursor.fetchone.return_value = (42,)
-        mock_cursor.fetchall.return_value = [(100,), (101,)]
+        mock_cursor.fetchone.side_effect = [(10,), (11,)]
+        mock_cursor.fetchall.return_value = [(0,), (1,)]
 
         with patch("cns.storage.postgres._conn", return_value=mock_conn):
             storage.save_snapshot(_make_snapshot(n_trains=2))
 
-        # Pierwsze fetchone → id snapshotu
-        mock_cursor.fetchone.assert_called_once()
+        first_call_sql = mock_cursor.execute.call_args_list[0][0][0]
+        assert "operations_snapshots" in first_call_sql
 
-    def test_batch_insert_trains_jedno_execute(self, storage):
+    def test_execute_count_snapshot_plus_train_runs_plus_select(self, storage):
+        """execute: 1 (snapshot) + N (train_run upserts) + 1 (SELECT stations) = N+2."""
         mock_conn, mock_cursor = _make_conn_mock()
-        mock_cursor.fetchone.return_value = (1,)
-        # fetchall: 1) train IDs z unnest, 2) valid station IDs (stacje 0,1 użyte w _make_stop)
-        mock_cursor.fetchall.side_effect = [[(10,), (11,)], [(0,), (1,)]]
+        # 2 pociągi — INSERT RETURNING zwraca run_id dla każdego
+        mock_cursor.fetchone.side_effect = [(10,), (11,)]
+        mock_cursor.fetchall.return_value = [(0,), (1,)]
 
         with patch("cns.storage.postgres._conn", return_value=mock_conn):
             storage.save_snapshot(_make_snapshot(n_trains=2))
 
-        # execute wywołane 3 razy: INSERT snapshot + INSERT trains (unnest) + SELECT station_id
-        assert mock_cursor.execute.call_count == 3
+        # 1 snapshot + 2 train_run inserts + 1 SELECT stations = 4
+        assert mock_cursor.execute.call_count == 4
 
     def test_jeden_executemany_dla_wszystkich_przystankow(self, storage):
+        """Wszystkie przystanki wstawiane jednym executemany do station_stops_hot."""
         mock_conn, mock_cursor = _make_conn_mock()
-        mock_cursor.fetchone.return_value = (1,)
-        # 2 pociągi × 2 przystanki = 4 rekordy; station_ids: 0,1 (z _make_stop(str(i)))
-        mock_cursor.fetchall.side_effect = [[(10,), (11,)], [(0,), (1,)]]
+        mock_cursor.fetchone.side_effect = [(10,), (11,)]
+        mock_cursor.fetchall.return_value = [(0,), (1,)]
 
         with patch("cns.storage.postgres._conn", return_value=mock_conn):
             storage.save_snapshot(_make_snapshot(n_trains=2))
@@ -202,7 +204,6 @@ class TestSaveSnapshot:
 
     def test_brak_pociagow_nie_wywoluje_executemany(self, storage):
         mock_conn, mock_cursor = _make_conn_mock()
-        mock_cursor.fetchone.return_value = (1,)
 
         with patch("cns.storage.postgres._conn", return_value=mock_conn):
             storage.save_snapshot(_make_snapshot(n_trains=0))
@@ -210,9 +211,11 @@ class TestSaveSnapshot:
         mock_cursor.executemany.assert_not_called()
 
     def test_pociag_z_niepoprawnym_id_jest_pomijany(self, storage):
+        """Pociąg z nienumerycznym schedule_id/order_id pomijany przed otwarciem połączenia."""
         mock_conn, mock_cursor = _make_conn_mock()
-        mock_cursor.fetchone.return_value = (1,)
-        mock_cursor.fetchall.return_value = [(10,)]
+        # Tylko 1 dobry pociąg → 1 train_run upsert
+        mock_cursor.fetchone.side_effect = [(10,)]
+        mock_cursor.fetchall.return_value = [(0,)]
 
         bad_train = TrainOperation(
             collected_at=datetime(2026, 5, 27, 12, 0),
@@ -236,17 +239,28 @@ class TestSaveSnapshot:
         with patch("cns.storage.postgres._conn", return_value=mock_conn):
             storage.save_snapshot(snapshot)
 
-        # Tylko 1 poprawny pociąg przekazany do batch insert
-        execute_calls = mock_cursor.execute.call_args_list
-        train_insert_call = execute_calls[1]
-        schedule_ids = train_insert_call[0][1][1]
-        assert len(schedule_ids) == 1
+        # execute: 1 snapshot + 1 train_run insert + 1 SELECT stations = 3
+        assert mock_cursor.execute.call_count == 3
+
+    def test_train_run_conflict_uzywa_select(self, storage):
+        """Gdy INSERT do train_runs zwraca None (ON CONFLICT DO NOTHING), SELECT pobiera ID."""
+        mock_conn, mock_cursor = _make_conn_mock()
+        # INSERT → None (conflict), SELECT → (10,)
+        mock_cursor.fetchone.side_effect = [None, (10,)]
+        mock_cursor.fetchall.return_value = [(0,), (1,)]
+
+        with patch("cns.storage.postgres._conn", return_value=mock_conn):
+            storage.save_snapshot(_make_snapshot(n_trains=1))
+
+        # execute: 1 snapshot + 1 INSERT (conflict) + 1 SELECT train_run + 1 SELECT stations = 4
+        assert mock_cursor.execute.call_count == 4
+        mock_cursor.executemany.assert_called_once()
 
     def test_stop_rows_zawieraja_delay_minutes(self, storage):
+        """delay_departure_min w tuple przystanku na indeksie 8."""
         mock_conn, mock_cursor = _make_conn_mock()
-        mock_cursor.fetchone.return_value = (1,)
-        # fetchall: 1) train IDs, 2) valid station IDs (33506 musi być w valid_ids)
-        mock_cursor.fetchall.side_effect = [[(10,)], [(33506,)]]
+        mock_cursor.fetchone.side_effect = [(10,)]
+        mock_cursor.fetchall.return_value = [(33506,)]
 
         train = _make_train("100", n_stops=0)
         stop = _make_stop("33506", delay_dep=7)
@@ -266,8 +280,53 @@ class TestSaveSnapshot:
 
         stop_rows = mock_cursor.executemany.call_args[0][1]
         assert len(stop_rows) == 1
-        # delay_departure_min (indeks 9) = 7
-        assert stop_rows[0][9] == 7
+        # Nowa struktura: (run_id, station_id, seq, pl_arr, act_arr, pl_dep, act_dep,
+        #                  delay_arr[7], delay_dep[8], is_confirmed, is_cancelled)
+        assert stop_rows[0][8] == 7
+
+
+# ---------------------------------------------------------------------------
+# archive_hot_data
+# ---------------------------------------------------------------------------
+
+class TestArchiveHotData:
+    def test_wywoluje_insert_archive_i_delete(self, storage):
+        """archive_hot_data wykonuje INSERT do archive i DELETE z hot."""
+        mock_conn, mock_cursor = _make_conn_mock()
+        mock_cursor.rowcount = 50
+
+        with patch("cns.storage.postgres._conn", return_value=mock_conn):
+            result = storage.archive_hot_data(retention_days=3)
+
+        # 2 execute: INSERT archive + DELETE hot
+        assert mock_cursor.execute.call_count == 2
+        archive_sql = mock_cursor.execute.call_args_list[0][0][0]
+        delete_sql = mock_cursor.execute.call_args_list[1][0][0]
+        assert "station_stops_archive" in archive_sql
+        assert "DELETE" in delete_sql
+
+    def test_zwraca_liczbe_zarchiwizowanych(self, storage):
+        """Zwraca rowcount z INSERT (nie z DELETE)."""
+        mock_conn, mock_cursor = _make_conn_mock()
+        mock_cursor.rowcount = 42
+
+        with patch("cns.storage.postgres._conn", return_value=mock_conn):
+            result = storage.archive_hot_data()
+
+        assert result == 42
+
+    def test_przekazuje_retention_days_do_sql(self, storage):
+        """retention_days jest parametrem obu zapytań SQL."""
+        mock_conn, mock_cursor = _make_conn_mock()
+        mock_cursor.rowcount = 0
+
+        with patch("cns.storage.postgres._conn", return_value=mock_conn):
+            storage.archive_hot_data(retention_days=7)
+
+        params_archive = mock_cursor.execute.call_args_list[0][0][1]
+        params_delete = mock_cursor.execute.call_args_list[1][0][1]
+        assert params_archive == (7,)
+        assert params_delete == (7,)
 
 
 # ---------------------------------------------------------------------------

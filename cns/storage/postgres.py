@@ -220,74 +220,80 @@ class PostgresStorage:
             INSERT INTO operations_snapshots
                 (data_version, fetched_at, total_trains, total_stops)
             VALUES (%s, %s, %s, %s)
+        """
+        # UPSERT train_runs — 1 wiersz per unikatowy kurs, nie per snapshot
+        train_run_sql = """
+            INSERT INTO train_runs (schedule_id, order_id, operating_date)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (schedule_id, order_id, operating_date) DO NOTHING
             RETURNING id
         """
-        # Batch insert wszystkich pociągów jednym zapytaniem przez unnest –
-        # eliminuje ~10 000 osobnych round-tripów do bazy.
-        train_batch_sql = """
-            INSERT INTO train_operations
-                (snapshot_id, schedule_id, order_id, operating_date,
-                 train_status, collected_at)
-            SELECT %s,
-                   unnest(%s::integer[]),
-                   unnest(%s::bigint[]),
-                   unnest(%s::date[]),
-                   unnest(%s::char(1)[]),
-                   unnest(%s::timestamptz[])
-            RETURNING id
+        train_run_select_sql = """
+            SELECT id FROM train_runs
+            WHERE schedule_id = %s AND order_id = %s AND operating_date = %s
         """
-        stop_sql = """
-            INSERT INTO station_stops
-                (train_op_id, station_id, planned_sequence, actual_sequence,
-                 planned_arrival, actual_arrival, planned_departure, actual_departure,
-                 delay_arrival_min, delay_departure_min, is_confirmed, is_cancelled)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        hot_upsert_sql = """
+            INSERT INTO station_stops_hot
+                (train_run_id, station_id, planned_sequence,
+                 planned_arrival, actual_arrival,
+                 planned_departure, actual_departure,
+                 delay_arrival_min, delay_departure_min,
+                 is_confirmed, is_cancelled, last_seen_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (train_run_id, station_id) DO UPDATE SET
+                actual_arrival      = EXCLUDED.actual_arrival,
+                actual_departure    = EXCLUDED.actual_departure,
+                delay_arrival_min   = EXCLUDED.delay_arrival_min,
+                delay_departure_min = EXCLUDED.delay_departure_min,
+                is_confirmed        = EXCLUDED.is_confirmed,
+                is_cancelled        = EXCLUDED.is_cancelled,
+                last_seen_at        = NOW()
         """
 
-        # Walidacja przed otwarciem połączenia – odfiltrowuje rekordy z niepoprawnymi ID
         valid_trains = []
-        skipped = 0
         for train in snapshot.trains:
             try:
                 valid_trains.append((train, int(train.schedule_id), int(train.order_id)))
             except (ValueError, TypeError):
-                skipped += 1
+                continue
 
         with _conn(self.database_url) as conn:
             with conn.cursor() as cur:
+                # 1. Snapshot dla health monitoringu
                 cur.execute(snapshot_sql, (
                     snapshot.data_version_guid,
                     snapshot.fetched_at,
                     snapshot.total_trains,
                     snapshot.total_stops,
                 ))
-                snapshot_id = cur.fetchone()[0]
 
-                if not valid_trains:
-                    logger.info("Snapshot zapisany (0 pociągów, pominięto: %d)", skipped)
-                    return
+                # 2. Upsert train_runs — zbierz ID per kurs
+                train_run_ids: dict[tuple, int] = {}
+                for train, sched_id, ord_id in valid_trains:
+                    op_date = train.operating_date or None
+                    key = (sched_id, ord_id, op_date)
+                    cur.execute(train_run_sql, key)
+                    row = cur.fetchone()
+                    if row is None:
+                        # ON CONFLICT DO NOTHING — pobierz istniejące ID
+                        cur.execute(train_run_select_sql, key)
+                        row = cur.fetchone()
+                    if row:
+                        train_run_ids[key] = row[0]
 
-                trains = [t for t, _, _ in valid_trains]
-                cur.execute(train_batch_sql, (
-                    snapshot_id,
-                    [s for _, s, _ in valid_trains],
-                    [o for _, _, o in valid_trains],
-                    [t.operating_date or None for t in trains],
-                    [t.train_status for t in trains],
-                    [t.collected_at for t in trains],
-                ))
-                train_ids = [row[0] for row in cur.fetchall()]
-
-                # Zbierz wszystkie przystanki ze wszystkich pociągów naraz
-                all_stop_rows = []
-                for train, train_db_id in zip(trains, train_ids):
+                # 3. Batch upsert station_stops_hot
+                stop_rows = []
+                for train, sched_id, ord_id in valid_trains:
+                    op_date = train.operating_date or None
+                    run_id = train_run_ids.get((sched_id, ord_id, op_date))
+                    if run_id is None:
+                        continue
                     for stop in train.stops:
                         try:
-                            all_stop_rows.append((
-                                train_db_id,
+                            stop_rows.append((
+                                run_id,
                                 int(stop.station_id) if stop.station_id else None,
                                 stop.planned_sequence,
-                                stop.actual_sequence,
                                 stop.planned_arrival,
                                 stop.actual_arrival,
                                 stop.planned_departure,
@@ -300,19 +306,61 @@ class PostgresStorage:
                         except Exception:
                             continue
 
-                # Jeden executemany zamiast 10 000 osobnych wywołań
-                if all_stop_rows:
+                if stop_rows:
                     cur.execute("SELECT station_id FROM stations")
                     valid_ids = {row[0] for row in cur.fetchall()}
-                    all_stop_rows = [r for r in all_stop_rows if r[1] in valid_ids]
-                    if all_stop_rows:
-                        cur.executemany(stop_sql, all_stop_rows)
+                    stop_rows = [r for r in stop_rows if r[1] in valid_ids]
+                    if stop_rows:
+                        cur.executemany(hot_upsert_sql, stop_rows)
 
         elapsed = time.monotonic() - t0
         logger.info(
-            "Snapshot zapisany: %d pociągów, %d przystanków w %.1fs (pominięto: %d)",
-            len(train_ids), len(all_stop_rows), elapsed, skipped,
+            "Snapshot hot: %d kursów, %d przystanków w %.1fs",
+            len(train_run_ids), len(stop_rows), elapsed,
         )
+
+    def archive_hot_data(self, retention_days: int = 3) -> int:
+        """Przepisz dane starsze niż retention_days z hot do archive, usuń z hot.
+
+        Wywołuj raz dziennie. Zwraca liczbę zarchiwizowanych wierszy.
+        """
+        archive_sql = """
+            INSERT INTO station_stops_archive
+                (train_run_id, station_id, operating_date,
+                 actual_arrival, actual_departure,
+                 delay_arrival_min, delay_departure_min, is_cancelled)
+            SELECT
+                h.train_run_id,
+                h.station_id,
+                tr.operating_date,
+                h.actual_arrival,
+                h.actual_departure,
+                h.delay_arrival_min::SMALLINT,
+                h.delay_departure_min::SMALLINT,
+                h.is_cancelled
+            FROM station_stops_hot h
+            JOIN train_runs tr ON h.train_run_id = tr.id
+            WHERE tr.operating_date < CURRENT_DATE - (%s)
+              AND h.station_id IS NOT NULL
+              AND (h.actual_arrival IS NOT NULL
+                   OR h.actual_departure IS NOT NULL
+                   OR h.is_cancelled = TRUE)
+            ON CONFLICT (operating_date, train_run_id, station_id) DO NOTHING
+        """
+        delete_sql = """
+            DELETE FROM station_stops_hot h
+            USING train_runs tr
+            WHERE h.train_run_id = tr.id
+              AND tr.operating_date < CURRENT_DATE - (%s)
+        """
+        with _conn(self.database_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(archive_sql, (retention_days,))
+                archived = cur.rowcount
+                cur.execute(delete_sql, (retention_days,))
+                deleted = cur.rowcount
+        logger.info("Archiwizacja: %d → archive, %d usunięto z hot", archived, deleted)
+        return archived
 
     # -------------------------------------------------------------------------
     # Utrudnienia
@@ -564,11 +612,12 @@ class PostgresStorage:
                 (SELECT COUNT(*) FROM stations)             AS stations,
                 (SELECT COUNT(*) FROM carriers)             AS carriers,
                 (SELECT COUNT(*) FROM operations_snapshots) AS snapshots,
-                (SELECT COUNT(*) FROM train_operations)     AS train_ops,
-                (SELECT COUNT(*) FROM station_stops)        AS stops,
+                (SELECT COUNT(*) FROM train_runs)           AS train_ops,
+                (SELECT COUNT(*) FROM station_stops_hot)
+                  + (SELECT COUNT(*) FROM station_stops_archive) AS stops,
                 (SELECT COUNT(*) FROM disruptions)          AS disruptions,
                 (SELECT MAX(fetched_at) FROM operations_snapshots) AS last_snapshot,
-                (SELECT MIN(operating_date) FROM train_operations) AS measurement_start
+                (SELECT MIN(operating_date) FROM train_runs) AS measurement_start
         """
         with _conn(self.database_url) as conn:
             with conn.cursor() as cur:

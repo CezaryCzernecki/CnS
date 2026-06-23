@@ -106,6 +106,8 @@ class DataCollector:
         if hasattr(storage, "database_url") and not dry_run:
             self._health_checker = HealthChecker(storage.database_url)
         self._health_interval = 5 * 60  # co 5 minut
+        self._last_archive: Optional[float] = None
+        self._archive_interval = 24 * 3600  # co 24h
 
     def run(self) -> None:
         logger.info("🚆 TorAlert DataCollector start (dry_run=%s)", self.dry_run)
@@ -206,6 +208,14 @@ class DataCollector:
         ):
             self._run_health_check()
             self._last_health = now
+        if hasattr(self.storage, "archive_hot_data") and (
+            self._last_archive is None or (now - self._last_archive) >= self._archive_interval
+        ):
+            try:
+                self.storage.archive_hot_data(retention_days=3)
+            except Exception as e:
+                logger.error("Błąd archiwizacji: %s", e)
+            self._last_archive = now
 
     def _run_health_check(self) -> None:
         try:

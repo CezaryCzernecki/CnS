@@ -105,20 +105,20 @@ def _get_conn(db_url: str):
 # Zakłada istnienie CTE `top_runs` z kolumną `latest_train_op_id`.
 _FIRST_LAST_ST_CTES = """\
 first_st AS (
-    SELECT DISTINCT ON (ss.train_op_id)
-        ss.train_op_id, st.name AS station_name
+    SELECT DISTINCT ON (h.train_run_id)
+        h.train_run_id, st.name AS station_name
     FROM top_runs tr
-    JOIN station_stops ss ON ss.train_op_id = tr.latest_train_op_id
-    LEFT JOIN stations st ON st.station_id = ss.station_id
-    ORDER BY ss.train_op_id, ss.planned_sequence ASC
+    JOIN station_stops_hot h ON h.train_run_id = tr.train_run_id
+    LEFT JOIN stations st ON st.station_id = h.station_id
+    ORDER BY h.train_run_id, h.planned_sequence ASC
 ),
 last_st AS (
-    SELECT DISTINCT ON (ss.train_op_id)
-        ss.train_op_id, st.name AS station_name
+    SELECT DISTINCT ON (h.train_run_id)
+        h.train_run_id, st.name AS station_name
     FROM top_runs tr
-    JOIN station_stops ss ON ss.train_op_id = tr.latest_train_op_id
-    LEFT JOIN stations st ON st.station_id = ss.station_id
-    ORDER BY ss.train_op_id, ss.planned_sequence DESC
+    JOIN station_stops_hot h ON h.train_run_id = tr.train_run_id
+    LEFT JOIN stations st ON st.station_id = h.station_id
+    ORDER BY h.train_run_id, h.planned_sequence DESC
 )"""
 
 
@@ -656,7 +656,7 @@ def rankings_all_time(
                     f"""
                     WITH top_runs AS (
                         SELECT schedule_id, order_id, operating_date,
-                               max_delay_min, latest_train_op_id
+                               max_delay_min, train_run_id
                         FROM mv_train_run_delays
                         ORDER BY max_delay_min DESC
                         LIMIT %s
@@ -680,8 +680,8 @@ def rankings_all_time(
                                     AND sc.operating_date = dr.operating_date
                                     AND sc.national_number IS NOT NULL
                     LEFT JOIN carriers c   ON c.code = sc.carrier_code
-                    LEFT JOIN first_st fst ON fst.train_op_id = dr.latest_train_op_id
-                    LEFT JOIN last_st  lst ON lst.train_op_id = dr.latest_train_op_id
+                    LEFT JOIN first_st fst ON fst.train_run_id = dr.train_run_id
+                    LEFT JOIN last_st  lst ON lst.train_run_id = dr.train_run_id
                     LEFT JOIN LATERAL (
                         SELECT
                             TRUE      AS has_kz,
@@ -699,9 +699,9 @@ def rankings_all_time(
                         LIMIT 1
                     ) kz ON TRUE
                     LEFT JOIN LATERAL (
-                        SELECT BOOL_AND(ss.is_cancelled) AS all_cancelled
-                        FROM station_stops ss
-                        WHERE ss.train_op_id = dr.latest_train_op_id
+                        SELECT BOOL_AND(h.is_cancelled) AS all_cancelled
+                        FROM station_stops_hot h
+                        WHERE h.train_run_id = dr.train_run_id
                     ) kz_stops ON TRUE
                     WHERE NOT COALESCE(kz_stops.all_cancelled, FALSE)
                     ORDER BY dr.max_delay_min DESC
@@ -762,7 +762,7 @@ def rankings_daily(
                     f"""
                     WITH top_runs AS (
                         SELECT schedule_id, order_id, operating_date,
-                               max_delay_min, latest_train_op_id
+                               max_delay_min, train_run_id
                         FROM mv_train_run_delays
                         WHERE operating_date = %s
                         ORDER BY max_delay_min DESC
@@ -781,12 +781,12 @@ def rankings_daily(
                                     AND sc.operating_date = dr.operating_date
                                     AND sc.national_number IS NOT NULL
                     LEFT JOIN carriers c   ON c.code = sc.carrier_code
-                    LEFT JOIN first_st fst ON fst.train_op_id = dr.latest_train_op_id
-                    LEFT JOIN last_st  lst ON lst.train_op_id = dr.latest_train_op_id
+                    LEFT JOIN first_st fst ON fst.train_run_id = dr.train_run_id
+                    LEFT JOIN last_st  lst ON lst.train_run_id = dr.train_run_id
                     LEFT JOIN LATERAL (
-                        SELECT BOOL_AND(ss.is_cancelled) AS all_cancelled
-                        FROM station_stops ss
-                        WHERE ss.train_op_id = dr.latest_train_op_id
+                        SELECT BOOL_AND(h.is_cancelled) AS all_cancelled
+                        FROM station_stops_hot h
+                        WHERE h.train_run_id = dr.train_run_id
                     ) chk ON TRUE
                     WHERE NOT COALESCE(chk.all_cancelled, FALSE)
                     ORDER BY dr.max_delay_min DESC
