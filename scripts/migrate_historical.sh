@@ -2,8 +2,15 @@
 # scripts/migrate_historical.sh
 # Migracja historyczna: station_stops + train_operations → station_stops_archive
 #
-# Podejście: dzień po dniu, każdy cykl zwalnia ~2.5 GB przed kolejnym.
-# Bezpieczne do restartu: INSERT ON CONFLICT DO NOTHING, DELETE idempotentny.
+# Strategia: TYLKO archiwizacja (bez DELETE w pętli).
+# DROP TABLE na końcu (KROK 6) — jedyne podejście które fizycznie zwalnia miejsce na dysku.
+#
+# Dlaczego nie DELETE+VACUUM w pętli:
+#   - DELETE+VACUUM nie zwraca miejsca do OS — tylko oznacza strony jako wolne wewnątrz pliku.
+#   - Fizyczne miejsce wraca do OS tylko przez DROP TABLE lub VACUUM FULL (wymaga 2× miejsca).
+#   - Każdy INSERT do archive (+5 MB) bez realnego zwolnienia → dysk idzie w dół.
+#
+# Bezpieczne do restartu: INSERT ON CONFLICT DO NOTHING.
 #
 # URUCHAMIAJ NA SERWERZE:
 #   bash ~/app/scripts/migrate_historical.sh 2>&1 | tee ~/app/migrate_$(date +%Y%m%d_%H%M).log
@@ -18,7 +25,7 @@ END_DATE="${END_DATE:-$(date -d "3 days ago" +%Y-%m-%d)}"
 END_EXCLUSIVE=$(date -d "$END_DATE + 1 day" +%Y-%m-%d)
 
 echo "========================================================"
-echo "MIGRACJA HISTORYCZNA: $START_DATE → $END_DATE"
+echo "MIGRACJA HISTORYCZNA (archive-only): $START_DATE → $END_DATE"
 echo "Czas startu: $(date)"
 echo "========================================================"
 
@@ -38,13 +45,15 @@ ORDER BY pg_total_relation_size(oid) DESC;
 SQL
 
 echo ""
-$PSQL -c "SELECT MIN(operating_date) AS od, MAX(operating_date) AS do, COUNT(DISTINCT operating_date) AS dni_lacznie FROM train_operations;"
+$PSQL -c "SELECT MIN(operating_date) AS od, MAX(operating_date) AS do, COUNT(DISTINCT operating_date) AS dni_w_train_operations FROM train_operations;"
+echo ""
+$PSQL -c "SELECT MIN(operating_date) AS od, MAX(operating_date) AS do, COUNT(DISTINCT operating_date) AS dni_w_archive FROM station_stops_archive;"
 echo "Wolne miejsce: $(df -h / | tail -1 | awk '{print $4}')"
 
-# ── FAZA 1: Populacja train_runs dla całej historii ──────────────────────────
-# Jeden zbiorczy UPSERT (małe dane ~20 MB) przed pętlą dzień-po-dniu.
+# ── FAZA 1: Populacja train_runs dla pozostałej historii ─────────────────────
+# Idempotentny: ON CONFLICT DO NOTHING — można restartować.
 echo ""
-echo "=== FAZA 1: Upsert train_runs dla całej historii ==="
+echo "=== FAZA 1: Upsert train_runs ==="
 $PSQL <<'SQL'
 SET work_mem = '256MB';
 INSERT INTO train_runs (schedule_id, order_id, operating_date)
@@ -58,26 +67,23 @@ ON CONFLICT (schedule_id, order_id, operating_date) DO NOTHING;
 SQL
 $PSQL -c "SELECT COUNT(*) AS train_runs_lacznie FROM train_runs;"
 
-# ── FAZA 2: Dzień po dniu — archive → delete station_stops → delete train_ops → vacuum ──
+# ── FAZA 2: Archiwizacja dzień po dniu (TYLKO INSERT, bez DELETE) ─────────────
 echo ""
-echo "=== FAZA 2: Migracja dzień po dniu ==="
+echo "=== FAZA 2: Archiwizacja dzień po dniu ==="
+echo "    (bez DELETE — dysk nie zmniejszy się do KROK 6)"
 
 current="$START_DATE"
 day_num=0
+total_archived=0
 
 while [[ "$current" < "$END_EXCLUSIVE" ]]; do
     day_num=$((day_num + 1))
     next=$(date -d "$current + 1 day" +%Y-%m-%d)
 
-    echo ""
-    echo "--- Dzień $day_num: $current ---"
-    echo "  Wolne przed: $(df -h / | tail -1 | awk '{print $4}')"
-
-    # 2a. INSERT do station_stops_archive
-    # DISTINCT ON (tr.id, ss.station_id) → jeden wiersz per kurs×stacja.
-    # Preferujemy wiersz z actual_departure (ostatnie dane z najnowszego snapshotu).
-    # Filtr: tylko wiersze z faktycznymi pomiarami lub odwołaniem.
-    $PSQL <<SQL
+    # INSERT do station_stops_archive
+    # DISTINCT ON (tr.id, ss.station_id) → 1 wiersz per kurs×stacja.
+    # ON CONFLICT DO NOTHING → bezpieczny restart, pomija już zarchiwizowane dni.
+    inserted=$($PSQL -t <<SQL
 SET work_mem = '512MB';
 INSERT INTO station_stops_archive
     (train_run_id, station_id, operating_date,
@@ -109,41 +115,23 @@ ORDER BY tr.id, ss.station_id,
          ss.id DESC
 ON CONFLICT (operating_date, train_run_id, station_id) DO NOTHING;
 SQL
-    echo "  [1/4] archive INSERT: OK"
-
-    # 2b. DELETE station_stops dla tego dnia (przez JOIN na train_operations)
-    $PSQL <<SQL
-DELETE FROM station_stops ss
-USING train_operations to_
-WHERE ss.train_op_id = to_.id
-  AND to_.operating_date = '$current'::date;
-SQL
-    echo "  [2/4] station_stops DELETE: OK"
-
-    # 2c. DELETE train_operations dla tego dnia (FK ON DELETE CASCADE obsługuje resztę)
-    $PSQL -c "DELETE FROM train_operations WHERE operating_date = '$current'::date;"
-    echo "  [3/4] train_operations DELETE: OK"
-
-    # 2d. VACUUM — fizyczne zwolnienie miejsca na dysku (kluczowe dla pętli)
-    # PARALLEL 0: wyłącza parallel workers, unika alokacji DSM w /dev/shm kontenera.
-    $PSQL \
-        -c "VACUUM (ANALYZE, PARALLEL 0) station_stops" \
-        -c "VACUUM (ANALYZE, PARALLEL 0) train_operations"
-    echo "  [4/4] VACUUM: OK"
-
-    echo "  Wolne po:    $(df -h / | tail -1 | awk '{print $4}')"
-    remaining=$($PSQL -t -c "SELECT COUNT(DISTINCT operating_date) FROM train_operations;" | tr -d ' \n')
-    echo "  Pozostało dni w train_operations: $remaining"
+    )
+    # wyciągnij liczbę z "INSERT 0 N"
+    n=$(echo "$inserted" | grep -oP 'INSERT 0 \K\d+' || echo "0")
+    total_archived=$((total_archived + n))
+    echo "  Dzień $day_num ($current): +${n} wierszy w archive (łącznie: $total_archived)"
 
     current="$next"
 done
 
-# ── FAZA 3: Wynik końcowy ─────────────────────────────────────────────────────
+# ── FAZA 3: Podsumowanie ──────────────────────────────────────────────────────
 echo ""
 echo "========================================================"
-echo "MIGRACJA ZAKOŃCZONA: $(date)"
+echo "ARCHIWIZACJA ZAKOŃCZONA: $(date)"
+echo "Łącznie zarchiwizowane wiersze: $total_archived"
 echo "========================================================"
 
+echo ""
 $PSQL <<'SQL'
 SELECT
     relname                                              AS tabela,
@@ -157,9 +145,17 @@ ORDER BY pg_total_relation_size(oid) DESC;
 SQL
 
 echo ""
-df -h /
+$PSQL -c "SELECT COUNT(DISTINCT operating_date) AS dni_w_archive FROM station_stops_archive;"
+echo "Wolne miejsce: $(df -h / | tail -1 | awk '{print $4}')"
+
 echo ""
-echo "Następny krok (KROK 6):"
+echo "================================================================"
+echo "NASTĘPNY KROK (KROK 6) — uruchom ręcznie po potwierdzeniu:"
+echo ""
+echo "  docker exec -i cyrk-na-szynach-db psql -U cyrk_na_szynach -d cyrk_na_szynach << 'SQL'"
 echo "  DROP TABLE station_stops CASCADE;"
 echo "  DROP TABLE train_operations CASCADE;"
-echo "  VACUUM FULL train_runs;"
+echo "  SQL"
+echo ""
+echo "  DROP TABLE natychmiastowo zwalnia ~60 GB na dysku."
+echo "================================================================"
