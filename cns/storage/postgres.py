@@ -592,8 +592,11 @@ class PostgresStorage:
                 conn.execute(
                     "REFRESH MATERIALIZED VIEW CONCURRENTLY mv_cancelled_runs"
                 )
+                conn.execute(
+                    "REFRESH MATERIALIZED VIEW CONCURRENTLY mv_station_delay_stats"
+                )
             logger.info(
-                "Odświeżono mv_train_run_delays + mv_cancelled_runs (%.1fs)",
+                "Odświeżono mv_train_run_delays + mv_cancelled_runs + mv_station_delay_stats (%.1fs)",
                 time.monotonic() - t0,
             )
         except Exception as e:

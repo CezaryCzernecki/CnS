@@ -24,7 +24,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -102,23 +102,30 @@ def _get_conn(db_url: str):
 
 
 # Wspólne CTE first_st / last_st używane w rankingach all-time i daily.
-# Zakłada istnienie CTE `top_runs` z kolumną `latest_train_op_id`.
+# Źródło: schedule_stops (planowy rozkład) — działa dla całej historii,
+# nie tylko ostatnich 3 dni z station_stops_hot.
 _FIRST_LAST_ST_CTES = """\
 first_st AS (
-    SELECT DISTINCT ON (h.train_run_id)
-        h.train_run_id, st.name AS station_name
+    SELECT DISTINCT ON (tr.train_run_id)
+        tr.train_run_id, st.name AS station_name
     FROM top_runs tr
-    JOIN station_stops_hot h ON h.train_run_id = tr.train_run_id
-    LEFT JOIN stations st ON st.station_id = h.station_id
-    ORDER BY h.train_run_id, h.planned_sequence ASC
+    JOIN schedules sc   ON sc.schedule_id   = tr.schedule_id
+                       AND sc.order_id       = tr.order_id
+                       AND sc.operating_date = tr.operating_date
+    JOIN schedule_stops ss ON ss.schedule_id = sc.id
+    LEFT JOIN stations st  ON st.station_id  = ss.station_id
+    ORDER BY tr.train_run_id, ss.order_number ASC
 ),
 last_st AS (
-    SELECT DISTINCT ON (h.train_run_id)
-        h.train_run_id, st.name AS station_name
+    SELECT DISTINCT ON (tr.train_run_id)
+        tr.train_run_id, st.name AS station_name
     FROM top_runs tr
-    JOIN station_stops_hot h ON h.train_run_id = tr.train_run_id
-    LEFT JOIN stations st ON st.station_id = h.station_id
-    ORDER BY h.train_run_id, h.planned_sequence DESC
+    JOIN schedules sc   ON sc.schedule_id   = tr.schedule_id
+                       AND sc.order_id       = tr.order_id
+                       AND sc.operating_date = tr.operating_date
+    JOIN schedule_stops ss ON ss.schedule_id = sc.id
+    LEFT JOIN stations st  ON st.station_id  = ss.station_id
+    ORDER BY tr.train_run_id, ss.order_number DESC
 )"""
 
 
@@ -372,10 +379,12 @@ def health_collector(db_url: str = Depends(_db_url)):
 
 @app.get("/delays/stations/top", response_model=list[StationDelayStat])
 def top_delayed_stations(
+    response: Response,
     limit: int = Query(default=10, ge=1, le=500, description="Liczba stacji"),
     db_url: str = Depends(_db_url),
 ):
     """Stacje z największymi średnimi opóźnieniami w ostatnich 7 dniach (min. 10 pomiarów)."""
+    response.headers["Cache-Control"] = "public, max-age=300"
     try:
         import psycopg
     except ImportError:
@@ -388,7 +397,8 @@ def top_delayed_stations(
                     """
                     SELECT station_id, station_name, total_stops, stops_with_data,
                            delayed_count, avg_delay_min, max_delay_min, delay_rate_pct
-                    FROM v_station_delay_stats
+                    FROM mv_station_delay_stats
+                    ORDER BY avg_delay_min DESC NULLS LAST
                     LIMIT %s
                     """,
                     (limit,),
@@ -480,10 +490,12 @@ def stats(db_url: str = Depends(_db_url)):
 
 @app.get("/delays/stations/map", response_model=list[StationMapPoint])
 def stations_map(
+    response: Response,
     limit: int = Query(default=60, ge=1, le=200, description="Liczba stacji"),
     db_url: str = Depends(_db_url),
 ):
     """Stacje z opóźnieniami i koordynatami – do wizualizacji na mapie."""
+    response.headers["Cache-Control"] = "public, max-age=300"
     try:
         import psycopg
     except ImportError:
@@ -502,7 +514,7 @@ def stations_map(
                         v.avg_delay_min,
                         v.delay_rate_pct,
                         v.total_stops
-                    FROM v_station_delay_stats v
+                    FROM mv_station_delay_stats v
                     LEFT JOIN stations s ON v.station_id = s.station_id
                     WHERE s.latitude IS NOT NULL AND s.longitude IS NOT NULL
                     ORDER BY v.avg_delay_min DESC NULLS LAST
@@ -645,10 +657,12 @@ def predict_baseline(
 
 @app.get("/rankings/all-time", response_model=list[AllTimeRankingEntry])
 def rankings_all_time(
+    response: Response,
     limit: int = Query(default=10, ge=1, le=100, description="Top N wyników"),
     db_url: str = Depends(_db_url),
 ):
     """Ranking pociągów z najwyższymi opóźnieniami od początku notowań."""
+    response.headers["Cache-Control"] = "public, max-age=300"
     try:
         with _get_conn(db_url) as conn:
             with conn.cursor() as cur:
@@ -699,9 +713,9 @@ def rankings_all_time(
                         LIMIT 1
                     ) kz ON TRUE
                     LEFT JOIN LATERAL (
-                        SELECT BOOL_AND(h.is_cancelled) AS all_cancelled
-                        FROM station_stops_hot h
-                        WHERE h.train_run_id = dr.train_run_id
+                        SELECT BOOL_AND(vss.is_cancelled) AS all_cancelled
+                        FROM v_station_stops vss
+                        WHERE vss.train_run_id = dr.train_run_id
                     ) kz_stops ON TRUE
                     WHERE NOT COALESCE(kz_stops.all_cancelled, FALSE)
                     ORDER BY dr.max_delay_min DESC
@@ -741,6 +755,7 @@ def rankings_all_time(
 
 @app.get("/rankings/daily", response_model=list[DailyRankingEntry])
 def rankings_daily(
+    response: Response,
     date: str = Query(
         ..., description="Data w formacie YYYY-MM-DD (np. 2026-06-04)"
     ),
@@ -748,6 +763,7 @@ def rankings_daily(
     db_url: str = Depends(_db_url),
 ):
     """Ranking pociągów z najwyższymi opóźnieniami w danym dniu."""
+    response.headers["Cache-Control"] = "public, max-age=300"
     from datetime import date as date_type
 
     try:
@@ -784,9 +800,9 @@ def rankings_daily(
                     LEFT JOIN first_st fst ON fst.train_run_id = dr.train_run_id
                     LEFT JOIN last_st  lst ON lst.train_run_id = dr.train_run_id
                     LEFT JOIN LATERAL (
-                        SELECT BOOL_AND(h.is_cancelled) AS all_cancelled
-                        FROM station_stops_hot h
-                        WHERE h.train_run_id = dr.train_run_id
+                        SELECT BOOL_AND(vss.is_cancelled) AS all_cancelled
+                        FROM v_station_stops vss
+                        WHERE vss.train_run_id = dr.train_run_id
                     ) chk ON TRUE
                     WHERE NOT COALESCE(chk.all_cancelled, FALSE)
                     ORDER BY dr.max_delay_min DESC
@@ -811,12 +827,14 @@ def rankings_daily(
 
 @app.get("/rankings/monthly/trains", response_model=list[MonthlyTrainRankingEntry])
 def rankings_monthly_trains(
+    response: Response,
     year: int = Query(..., ge=2024, le=2030, description="Rok (np. 2026)"),
     month: int = Query(..., ge=1, le=12, description="Miesiąc (1–12)"),
     limit: int = Query(default=10, ge=1, le=100, description="Top N wyników"),
     db_url: str = Depends(_db_url),
 ):
     """Ranking pociągów z największą łączną liczbą minut opóźnień w danym miesiącu."""
+    response.headers["Cache-Control"] = "public, max-age=300"
     try:
         with _get_conn(db_url) as conn:
             with conn.cursor() as cur:
@@ -907,11 +925,13 @@ def rankings_monthly_trains(
 
 @app.get("/rankings/monthly/carriers", response_model=list[MonthlyCarrierRankingEntry])
 def rankings_monthly_carriers(
+    response: Response,
     year: int = Query(..., ge=2024, le=2030, description="Rok (np. 2026)"),
     month: int = Query(..., ge=1, le=12, description="Miesiąc (1–12)"),
     db_url: str = Depends(_db_url),
 ):
     """Ranking przewoźników z największą łączną liczbą minut opóźnień w danym miesiącu."""
+    response.headers["Cache-Control"] = "public, max-age=300"
     try:
         with _get_conn(db_url) as conn:
             with conn.cursor() as cur:
