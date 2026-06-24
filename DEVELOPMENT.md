@@ -10,28 +10,30 @@
         │
         ▼
 [DataCollector]          ← harmonogram: ops/15min, dis/60min, sched/1dzień
-        │
+        │                  archive_hot_data() raz dziennie
    ┌────┴────┐
    ▼         ▼
-[Parser]  [Storage]      ← Parser: JSON→dataclass | Storage: PostgreSQL/JSON
+[Parser]  [Storage]      ← Parser: JSON→dataclass | Storage: PostgreSQL
         │
         ▼
-[PostgreSQL]             ← batch insert przez unnest (10k pociągów / 170k przystanków)
-  ├── stations
-  ├── carriers
-  ├── commercial_categories
-  ├── schedules
-  ├── schedule_stops
+[PostgreSQL — Hot/Cold Storage]
+  ├── train_runs            ← 1 wiersz per unikatowy kurs (schedule×order×date)
+  ├── station_stops_hot     ← ostatnie 3 dni, UPSERT per kurs×stacja
+  ├── station_stops_archive ← historia >3 dni, partycje miesięczne (tylko pomiary)
+  ├── v_station_stops       ← UNION ALL hot + archive
+  ├── v_active_delays       ← aktywne kursy z opóźnieniami (na hot)
+  ├── stations / carriers / commercial_categories
+  ├── schedules / schedule_stops
   ├── operations_snapshots
-  ├── train_operations
-  ├── station_stops      ← główna tabela (~650k rekordów/dzień)
-  ├── disruptions
-  └── disruption_affected_routes
+  ├── disruptions / disruption_affected_routes
+  ├── weather_observations
+  └── calendar_events
 
 [FastAPI]                ← REST API (port 8000)
-  ├── GET /delays/stations/top   ← v_station_delay_stats
+  ├── GET /delays/stations/top   ← mv_train_run_delays
   ├── GET /delays/active         ← v_active_delays
-  └── GET /stats                 ← zliczenia tabel
+  ├── GET /stats                 ← zliczenia tabel
+  └── GET /rankings/*            ← mv_train_run_delays, mv_cancelled_runs
 ```
 
 ## Moduły
@@ -139,36 +141,44 @@ Jeśli GUID niezmieniony — pomija pobranie (oszczędność limitów).
 
 **Wzorzec połączenia:** nowe połączenie per operacja (`with _conn(...) as conn:`).
 
-**Optymalizacja `save_snapshot` (od v1.0):**
+**`save_snapshot` — Hot Storage (od v2.0, migracja 023):**
 
-Stary kod wykonywał ~20 000 round-tripów na snapshot (SAVEPOINT + INSERT + RELEASE per pociąg).
-Nowy kod: 2 round-tripy.
+Kolektor pisze do `train_runs` + `station_stops_hot`. Jeden wiersz per kurs×stacja,
+nadpisywany przy każdym kolejnym snapshotu.
 
 ```
-Stara implementacja (v0.3):   ~50s dla 10k pociągów × 17 przystanków
-  └─ for train in trains:
-       SAVEPOINT sp_train          # +1 round trip
-       INSERT train RETURNING id   # +1 round trip
-       executemany(stop_rows)      # +1 round trip
-       RELEASE SAVEPOINT           # +1 round trip
-  = 4 × 10 000 = 40 000 round-tripów
-
-Nowa implementacja (v1.0):    cel <10s
-  ├─ INSERT snapshot RETURNING id              # 1 round trip
-  ├─ INSERT trains via unnest RETURNING id[]   # 1 round trip (wszystkie 10k naraz!)
-  └─ executemany(ALL 170k stop rows)           # 1 wywołanie
-  = 3 operacje łącznie
+Implementacja v2.0 (hot storage):
+  ├─ INSERT operations_snapshots                            # 1 execute
+  ├─ for train in trains:
+  │    INSERT train_runs ... RETURNING id                   # execute per pociąg
+  │    jeśli None (ON CONFLICT) → SELECT id z train_runs   # execute per konflikt
+  └─ executemany(ALL stop rows → station_stops_hot)        # 1 wywołanie, ON CONFLICT DO UPDATE
 ```
 
-Kluczowy SQL dla batch insert pociągów:
+Kluczowy SQL dla UPSERT przystanków:
 ```sql
-INSERT INTO train_operations (snapshot_id, schedule_id, order_id, ...)
-SELECT %s, unnest(%s::integer[]), unnest(%s::bigint[]), ...
-RETURNING id
+INSERT INTO station_stops_hot
+    (train_run_id, station_id, planned_sequence, ..., last_seen_at)
+VALUES (%s, %s, ...)
+ON CONFLICT (train_run_id, station_id) DO UPDATE SET
+    actual_arrival = EXCLUDED.actual_arrival, ...
+    last_seen_at = NOW()
 ```
 
 Walidacja przed otwarciem połączenia: rekordy z niepoprawnymi ID (nie-liczba) są filtrowane
-w Pythonie — nie docierają do bazy, nie ma potrzeby SAVEPOINT per rekord.
+w Pythonie — pociąg z błędnym schedule_id/order_id pomijany w całości.
+
+**`archive_hot_data(retention_days=3)` — archiwizacja (od v2.0):**
+
+Wywoływana raz dziennie przez collector. Przenosi dane starsze niż `retention_days` dni:
+```
+1. INSERT INTO station_stops_archive ... FROM station_stops_hot
+   WHERE operating_date < CURRENT_DATE - retention_days
+     AND station_id IS NOT NULL
+     AND (actual_arrival IS NOT NULL OR actual_departure IS NOT NULL OR is_cancelled)
+   ON CONFLICT DO NOTHING
+2. DELETE FROM station_stops_hot WHERE operating_date < CURRENT_DATE - retention_days
+```
 
 **Protokół Storage:**
 ```python
@@ -177,6 +187,7 @@ class Storage(Protocol):
     def save_disruptions(self, raw: dict) -> None: ...   # surowy JSON!
     def save_schedules(self, raw: dict) -> None: ...     # surowy JSON!
     def save_raw(self, name: str, data: dict) -> None: ...
+    def archive_hot_data(self, retention_days: int = 3) -> int: ...
 ```
 
 ### `api/app.py` — FastAPI

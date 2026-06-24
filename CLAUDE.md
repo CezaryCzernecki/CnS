@@ -101,20 +101,38 @@ class Storage(Protocol):
 stations          (station_id PK, name, short_name, latitude, longitude)
 carriers          (code PK, name)
 operations_snapshots (id, data_version, fetched_at, total_trains, total_stops)
-train_operations  (id, snapshot_id FK, schedule_id, order_id, operating_date, train_status)
-station_stops     (id, train_op_id FK, station_id,
-                   planned_arrival/departure, actual_arrival/departure,
-                   delay_arrival_min, delay_departure_min)
-                   ← GŁÓWNA TABELA: ~650k rekordów/dzień
 disruptions       (id, disruption_id, message, disruption_type_code,
                    start_station_id FK, end_station_id FK,
                    has_bus_replacement BOOL, collected_at, collected_date DATE)
 schedules         (id, schedule_id, order_id, carrier_code, operating_date)
 schedule_stops    (id, schedule_id FK, station_id FK, arrival_time, departure_time)
+```
+
+**Hot/Cold Storage (migracja 023–024, czerwiec 2026):**
+```
+train_runs        (id PK SERIAL, schedule_id, order_id, operating_date)
+                   UNIQUE (schedule_id, order_id, operating_date)
+                   ← klucz kursów; zastępuje train_operations jako FK
+
+station_stops_hot (id BIGSERIAL PK, train_run_id FK, station_id FK,
+                   planned_sequence, planned_arrival/departure,
+                   actual_arrival/departure,
+                   delay_arrival_min, delay_departure_min SMALLINT,
+                   is_confirmed, is_cancelled, last_seen_at)
+                   UNIQUE NULLS NOT DISTINCT (train_run_id, station_id)
+                   ← GŁÓWNA TABELA: ostatnie 3 dni, UPSERT per kurs×stacja
+
+station_stops_archive (train_run_id, station_id NOT NULL, operating_date,
+                       actual_arrival/departure,
+                       delay_arrival_min, delay_departure_min SMALLINT,
+                       is_cancelled)
+                   PRIMARY KEY (operating_date, train_run_id, station_id)
+                   PARTITION BY RANGE (operating_date) — partycje miesięczne
+                   ← historia >3 dni, tylko faktyczne pomiary
 
 Widoki:
-  v_active_delays       — pociągi status P z opóźnieniami
-  v_station_delay_stats — statystyki per stacja (7 dni, min. 10 pomiarów)
+  v_station_stops       — UNION ALL hot + archive (ujednolicony dostęp)
+  v_active_delays       — aktywne pociągi z opóźnieniami (na station_stops_hot)
 ```
 
 ```
@@ -130,10 +148,12 @@ calendar_events   (id, event_date, zone CHAR(1), day_type, event_name)
                    UNIQUE NULLS NOT DISTINCT (event_date, zone)
 ```
 
-**Nowe tabele (planowane, jeszcze nie istnieją):**
+**Widoki zmaterializowane:**
 ```
-mv_training_features   ← Faza 2.1 (widok zmaterializowany)
-collector_health       ← Faza 5.1
+mv_training_features   — cechy ML: station_stops_hot × weather × calendar
+mv_train_run_delays    — max opóźnienie per kurs (v_station_stops)
+mv_cancelled_runs      — odwołane kursy per dzień × przewoźnik
+collector_health       — zdrowie kolektora
 ```
 
 ---
@@ -147,11 +167,13 @@ collector_health       ← Faza 5.1
 4. **Opóźnienia z różnicy** — API nie zwraca gotowych wartości; liczymy `actual - planned`
 5. **Anomalie >200 min** — przesunięcia rozkładowe (dobowe), nie prawdziwe opóźnienia.
    Filtrowane przez `MAX_REALISTIC_DELAY = 200` w `StationStop`
-6. **Stacje spoza słownika** — FK na `station_stops.station_id` jest `ON DELETE SET NULL`
-   (API zwraca stacje których nie ma w `/dictionaries/stations`)
+6. **Stacje spoza słownika** — FK na `station_stops_hot.station_id` jest `ON DELETE SET NULL`
+   (API zwraca stacje których nie ma w `/dictionaries/stations`); w archive `station_id NOT NULL`
+   — wiersze z NULL station_id filtrowane przez `archive_hot_data()` przed INSERT do archive
 7. **Dwa osobne liczniki godzinowe** — carriers używa innego (widoczne w logach: 1966 vs 99)
-8. **Batch insert bez SAVEPOINT** — błędne rekordy filtrowane w Pythonie przed połączeniem;
-   jeśli `unnest INSERT` rzuci wyjątek, cały snapshot jest wycofywany (rollback)
+8. **UPSERT do station_stops_hot** — jeden wiersz per (train_run_id, station_id);
+   kolektor nadpisuje przy kolejnych snapshotach (`ON CONFLICT DO UPDATE`);
+   walidacja ID w Pythonie przed połączeniem; pociąg z błędnym ID jest pomijany w całości
 9. **10000 rekordów limit** — API zwraca max 10k pociągów/stronę; paginacja niezbadana
 10. **`stations` w odpowiedzi** — to słownik `{id: nazwa}`, nie lista; na poziomie głównym JSON
 11. **`/schedules` wymaga jawnego `pageSize=10000`** — bez tego parametru API zwraca domyślnie
@@ -172,14 +194,24 @@ collector_health       ← Faza 5.1
     `operating_date >= CURRENT_DATE` (wyłącznie dzisiaj). Wczorajsze wpisy (artefakty
     starych snapshotów) są odfiltrowywane. Migracja 016 jest self-contained — dodaje
     brakujące kolumny IF NOT EXISTS (train_name, is_confirmed, is_cancelled).
+16. **VACUUM nie zwalnia miejsca do OS** — zwykły `VACUUM` tylko oznacza strony jako wolne
+    wewnątrz pliku tabeli. Fizyczne miejsce wraca do systemu wyłącznie przez `DROP TABLE`
+    (natychmiastowe) lub `VACUUM FULL` (wymaga 2× wolnego miejsca). Przy migracji historycznej
+    należy najpierw zarchiwizować wszystkie dni (INSERT-only), a dopiero potem DROP TABLE.
+17. **`PARALLEL 0` w VACUUM w kontenerze Docker** — domyślny `/dev/shm` Dockera to ~64 MB;
+    próba `SET maintenance_work_mem='512MB'` + VACUUM powoduje błąd "No space left on device"
+    przy alokacji DSM. Zawsze używaj `VACUUM (ANALYZE, PARALLEL 0)` wewnątrz kontenera.
+18. **Hot/Cold Storage — save_snapshot** — kolektor pisze wyłącznie do `train_runs` +
+    `station_stops_hot`; stare tabele `station_stops` i `train_operations` zostały usunięte
+    (czerwiec 2026). `archive_hot_data(retention_days=3)` przenosi dane starsze niż 3 dni
+    do `station_stops_archive` i usuwa je z hot; wywoływany raz dziennie przez collector.
 
 ---
 
 ## Stan projektu
 
 ### Działa ✅
-- Kolekcjonowanie RT co 15 min (10k pociągów/snapshot)
-- Batch insert przez `unnest` (<10s dla 10k × 17 przystanków)
+- Kolekcjonowanie RT co 15 min — UPSERT do `station_stops_hot` (1 wiersz/kurs×stacja)
 - Słowniki stacji i przewoźników (upsert)
 - Rozkład planowy (przy starcie + raz dziennie, `pageSize=10000`)
 - Utrudnienia (co 60 min)
@@ -189,10 +221,12 @@ collector_health       ← Faza 5.1
 - WeatherClient (Open-Meteo): pobieranie pogody co 1h dla 30 stacji PKP
 - CalendarService: klasyfikacja dni (HOLIDAY/WEEKEND/LONG_WEEKEND/WINTER_BREAK/SUMMER_BREAK)
 - Feature Store `mv_training_features`: LATERAL weather + LAG + flagi binarne, REFRESH CONCURRENTLY
-- Testy: 282 łącznie (parser + postgres + weather + calendar + features + collector + api_rankings)
-- Filtr widoku `v_active_delays` (migracja 016): tylko CURRENT_DATE, wczorajsze artefakty odfiltrowane
+- Testy: 298 łącznie (parser + postgres + weather + calendar + features + collector + api_rankings)
+- Filtr widoku `v_active_delays` (migracja 016→024): tylko CURRENT_DATE, hot storage
 - Kolektor pobiera rozkłady yesterday–today: pociągi nocne mają numery po restarcie
 - Rankingi: 4 zakładki w dashboardzie (wszech czasów / dzienny / miesięczny pociągi / miesięczny spółki)
+- **Hot/Cold Storage** (migracja 023–024, czerwiec 2026): `train_runs` + `station_stops_hot`
+  (3 dni) + `station_stops_archive` (partycje miesięczne); stare tabele usunięte (60 GB → 251 MB)
 
 ### Backlog — kolejność implementacji
 
