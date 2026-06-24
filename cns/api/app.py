@@ -686,8 +686,7 @@ def rankings_all_time(
                         lst.station_name    AS last_station,
                         kz.has_kz,
                         kz.kz_start,
-                        kz.kz_end,
-                        kz_stops.all_cancelled
+                        kz.kz_end
                     FROM top_runs dr
                     JOIN schedules sc ON sc.schedule_id   = dr.schedule_id
                                     AND sc.order_id       = dr.order_id
@@ -712,12 +711,6 @@ def rankings_all_time(
                           AND dar.operating_date = dr.operating_date
                         LIMIT 1
                     ) kz ON TRUE
-                    LEFT JOIN LATERAL (
-                        SELECT BOOL_AND(vss.is_cancelled) AS all_cancelled
-                        FROM v_station_stops vss
-                        WHERE vss.train_run_id = dr.train_run_id
-                    ) kz_stops ON TRUE
-                    WHERE NOT COALESCE(kz_stops.all_cancelled, FALSE)
                     ORDER BY dr.max_delay_min DESC
                     LIMIT %s
                     """,
@@ -733,21 +726,14 @@ def rankings_all_time(
         parts = [p for p in (start, end) if p]
         return " → ".join(parts) if parts else None
 
-    def _kz_segment(r) -> Optional[str]:
-        if r[7]:
-            return _bus_segment(r[8], r[9])
-        if r[10]:
-            return _bus_segment(r[5], r[6])
-        return None
-
     return [
         AllTimeRankingEntry(
             train_number=r[0], train_name=r[1], carrier_name=r[2],
             operating_date=str(r[3]) if r[3] is not None else None,
             max_delay_min=r[4],
             first_station=r[5], last_station=r[6],
-            has_bus_replacement=bool(r[7]) or bool(r[10]),
-            bus_segment=_kz_segment(r),
+            has_bus_replacement=bool(r[7]),
+            bus_segment=_bus_segment(r[8], r[9]) if r[7] else None,
         )
         for r in rows
     ]
@@ -799,12 +785,6 @@ def rankings_daily(
                     LEFT JOIN carriers c   ON c.code = sc.carrier_code
                     LEFT JOIN first_st fst ON fst.train_run_id = dr.train_run_id
                     LEFT JOIN last_st  lst ON lst.train_run_id = dr.train_run_id
-                    LEFT JOIN LATERAL (
-                        SELECT BOOL_AND(vss.is_cancelled) AS all_cancelled
-                        FROM v_station_stops vss
-                        WHERE vss.train_run_id = dr.train_run_id
-                    ) chk ON TRUE
-                    WHERE NOT COALESCE(chk.all_cancelled, FALSE)
                     ORDER BY dr.max_delay_min DESC
                     LIMIT %s
                     """,
